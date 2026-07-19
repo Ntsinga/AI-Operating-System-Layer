@@ -125,3 +125,43 @@ Chronological incident log for product issues and task-execution failures. Newes
     module's actual keys are.
   - Prefix custom native module bridge names with something project-specific (e.g. `Aios*`) to
     avoid this class of collision going forward for future modules.
+
+---
+
+## 2026-07-19 — Phase 2 planner: open_application hallucinates package names without grounding
+
+- **Area**: State / Tooling (LLM planner, `src/planner/openaiPlanner.ts`)
+- **Symptoms**: First manual test of the new AI planner: command "Oppen photos" (typo for "Open
+  photos") produced a plausible-looking, correctly-shaped tool call —
+  `open_application({ packageName: "com.android.gallery" })` — that the app confirmed and ran, and
+  which then correctly failed with `No launchable activity found for package: com.android.gallery`
+  (from `AppManagerModule.kt`'s own guard, per the 2026-07-19 open_application entry above; that
+  guard did its job here). On this device, Google Photos is actually
+  `com.google.android.apps.photos`.
+- **Root cause**: `planToolCall()` only sent the tool list (name/description/JSON-schema
+  parameters) to the model with no information about what apps are actually installed. GPT-4o-mini
+  filled in `packageName` from training-data knowledge of common Android package names, which is
+  frequently wrong for apps that were renamed/rebranded (Google Photos was `com.android.gallery`
+  years ago) or that don't have a single canonical package name across OEMs/regions.
+- **Solution**: `planToolCall(command, installedApps?)` now accepts the result of
+  `get_installed_apps` and lists every `name -> packageName` pair in the system prompt, instructing
+  the model to use those exact values instead of guessing. `PlannerCard.tsx` calls
+  `getInstalledAppsTool.execute()` before every `planToolCall()` (best-effort — falls back to
+  ungrounded planning if that fetch fails) so `open_application` proposals are grounded in the real
+  device state.
+- **Validation**: Re-ran "open photos" — proposed call is now
+  `open_application({ packageName: "com.google.android.apps.photos" })`, confirmed, and Google
+  Photos actually opened (into its own first-run backup prompt, which is that app's own onboarding,
+  not a failure — see the Calendar entry above for the same class of non-issue).
+- **Lessons**:
+  - A single-shot "pick one tool + arguments" planner (Phase 2 in the plan, no multi-step
+    orchestration yet) cannot self-correct a wrong argument by calling `get_installed_apps` first —
+    it only gets one shot. Any tool argument that depends on real device/account state (package
+    names, contact IDs, file paths, etc.) needs that state fed into the prompt up front, or the
+    model will confidently hallucinate a plausible-looking value from training data.
+  - "The tool call looks well-formed and confirms cleanly" is not the same as "the tool call is
+    correct" — always test the planner against apps/data that have non-obvious real identifiers
+    (renamed/rebranded apps are a good adversarial case), not just the first/easiest example.
+  - This is a good candidate to revisit once Phase 3 (multi-step orchestration, per the plan) adds a
+    tool-calling loop — at that point the model could call `get_installed_apps` itself as a step
+    instead of us having to pre-fetch and inject it for every command.

@@ -72,8 +72,34 @@ writing any Expo/React Native code.
 ## Tool contract
 
 - Every capability is a `ToolDefinition` (`src/tools/types.ts`) with `name`, `description`,
-  `parameters`, and `execute`. Register tools in `src/tools/registry.ts`. The future LLM planner
-  inspects this registry, so keep names/descriptions accurate.
+  `parameters`, and `execute`. `parameters` is a real JSON Schema object
+  (`{ type: 'object', properties: {...}, required?: [...] }`) — this is fed directly into the
+  OpenAI tool-calling API, so keep it accurate for every argument the tool actually reads.
+  Register tools in `src/tools/registry.ts`.
+
+## Phase 2 planner (`src/planner/openaiPlanner.ts`, `src/components/PlannerCard.tsx`)
+
+- Provider: OpenAI (`gpt-4o-mini`), chosen for balance of cost and quality — see
+  `docs/AI_OS_ORCHESTRATOR_PLAN.md` Phase 2. Single-shot tool-calling: the model picks exactly one
+  tool + arguments per command; nothing executes until the user taps "Confirm & run" in the UI
+  (`PlannerCard.tsx`). Do not wire up auto-execution without an explicit user decision to do so —
+  the plan requires confirmation for exactly this reason.
+- **API key**: `EXPO_PUBLIC_OPENAI_API_KEY`, read from `mobile/.env` (gitignored; copy
+  `.env.example`). `EXPO_PUBLIC_*` vars are inlined into the JS bundle at build time — this key
+  ships inside the APK and is extractable. Acceptable only because this is a local, personal
+  dev-only tool bench; before any real distribution, move the OpenAI call behind a backend proxy
+  (see the SECURITY NOTE at the top of `openaiPlanner.ts`). Changing `.env` requires restarting
+  Metro (`npm run android` again) — Fast Refresh does not pick up new env vars.
+- **Grounding**: `planToolCall()` takes an optional `installedApps` list and includes it verbatim
+  in the system prompt (`name -> packageName` pairs) so `open_application` gets real package names
+  instead of the model guessing from training-data knowledge, which is frequently wrong for
+  renamed/rebranded apps (e.g. Google Photos is `com.google.android.apps.photos`, not
+  `com.android.gallery` — the model's first guess). `PlannerCard.tsx` fetches
+  `get_installed_apps` before every plan call to supply this. Any future tool whose arguments
+  depend on real device/account state (contact IDs, file paths, etc.) needs the same treatment —
+  Phase 2 is single-shot, so the model cannot call a lookup tool first to self-correct; the data
+  must be pre-fetched and injected into the prompt. See `ERROR_LOG.md` (2026-07-19, planner
+  hallucinates package names).
 
 ## After completing tasks
 

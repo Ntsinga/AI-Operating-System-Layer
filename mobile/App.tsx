@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { JsonToolCard } from './src/components/JsonToolCard';
+import { PlannerCard } from './src/components/PlannerCard';
 import type { InstalledApp } from './src/native/AppManager';
 import {
   getContactsTool,
@@ -67,6 +68,8 @@ export default function App() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        <PlannerCard />
+
         {otherTools.map((tool) => (
           <JsonToolCard key={tool.name} tool={tool} />
         ))}
