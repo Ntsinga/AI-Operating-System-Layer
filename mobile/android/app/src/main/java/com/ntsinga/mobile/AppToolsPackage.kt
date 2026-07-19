@@ -7,7 +7,10 @@ import com.facebook.react.uimanager.ViewManager
 
 class AppToolsPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> = listOf(
-    AppManagerModule(reactContext)
+    AppManagerModule(reactContext),
+    DeviceInfoModule(reactContext),
+    LocationModule(reactContext),
+    ContactsModule(reactContext)
   )
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()

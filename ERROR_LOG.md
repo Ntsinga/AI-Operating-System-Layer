@@ -94,3 +94,34 @@ Chronological incident log for product issues and task-execution failures. Newes
     `result code=0` (our launch succeeded) and look for a follow-on redirect into `gms.auth` /
     setup activities before assuming the tool is broken.
   - For testing account-gated apps on an emulator, sign into a Google account first.
+
+---
+
+## 2026-07-19 — get_device_info: "undefined is not a function" from a native module name collision
+
+- **Area**: Native Bridge / Android
+- **Symptoms**: New `DeviceInfoModule.kt` (registered as `AppToolsPackage`'s `getName() = "DeviceInfo"`)
+  built and installed with no errors, but calling it from JS threw `undefined is not a function`
+  — not a promise rejection, not an `APP_MANAGER_*`/`DEVICE_INFO_*` error code, just a plain JS
+  TypeError with no native-side log line at all.
+- **Root cause**: React Native core already registers a built-in native module bridge-named
+  `"DeviceInfo"` (used internally by the `Dimensions` API). Our custom module used the exact same
+  `getName()` string. `NativeModules.DeviceInfo` in JS silently resolved to RN's built-in module
+  instead of ours — it exists and is truthy (so our "module unavailable" guard never fired), but it
+  has no `getDeviceInfo()` method, so calling it threw `undefined is not a function`. No exception,
+  no logcat error, and no rejection anywhere in our Kotlin code, because our code never ran.
+- **Solution**: Renamed the bridge name to `"AiosDeviceInfo"` (`DeviceInfoModule.kt`'s `getName()`)
+  and updated `mobile/src/native/DeviceInfo.ts` to destructure `NativeModules.AiosDeviceInfo`.
+- **Validation**: Rebuilt, ran `get_device_info` from the tool bench — returns real battery
+  percent, charging state, model, manufacturer, Android version, and current time.
+- **Lessons**:
+  - Never name a custom RN native module `getName()` after a well-known RN/Expo built-in
+    (`DeviceInfo`, `Dimensions`, `Clipboard`, `NetInfo`, etc.) — the collision is silent. JS sees a
+    real module object (so `if (!Module)` guards don't catch it) with different methods than
+    expected, and the failure looks like a generic JS bug, not a bridge problem.
+  - When a native-module call throws a bare JS error (`undefined is not a function`, no error code,
+    no logcat trace from our own `promise.reject` or exceptions) — suspect a name collision before
+    debugging the Kotlin/Java side. Check `NativeModules` in a debugger/log for what the resolved
+    module's actual keys are.
+  - Prefix custom native module bridge names with something project-specific (e.g. `Aios*`) to
+    avoid this class of collision going forward for future modules.

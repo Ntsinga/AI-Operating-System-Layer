@@ -54,6 +54,20 @@ writing any Expo/React Native code.
   (e.g. `APP_MANAGER_GET_INSTALLED_APPS_FAILED`) so the TypeScript layer can surface it.
 - TypeScript accesses modules via `NativeModules`; guard for the module being undefined (native
   build not present) and throw a clear message.
+- **Bridge name every module `getName()` with an `Aios`-prefixed name that is obviously ours**
+  (e.g. `AiosDeviceInfo`), never a bare name like `"DeviceInfo"`. React Native/Expo core already
+  registers built-in modules under common names (`DeviceInfo` is used internally by `Dimensions`).
+  A collision is silent: `NativeModules.<name>` in JS resolves to *whichever module won*, so an
+  `if (!Module)` guard does not catch it — the symptom is a bare `undefined is not a function`
+  with no error code and nothing in logcat from our own code, because our module never runs. See
+  `ERROR_LOG.md` (2026-07-19, get_device_info). Existing safe names already in use: `AppManager`,
+  `AiosDeviceInfo`, `LocationManagerModule`, `ContactsManager`.
+- **Runtime permissions** (location, contacts, etc.): use `PermissionHelper.requestPermission(...)`
+  (`PermissionHelper.kt`) rather than hand-rolling `ActivityCompat.requestPermissions`. It checks
+  `ContextCompat.checkSelfPermission` first, then requests through `currentActivity as
+  PermissionAwareActivity` (which `ReactActivity` implements out of the box — no extra wiring
+  needed in `MainActivity.kt`), and rejects the promise with `PERMISSION_DENIED` or
+  `PERMISSION_ACTIVITY_UNAVAILABLE` on failure.
 
 ## Tool contract
 

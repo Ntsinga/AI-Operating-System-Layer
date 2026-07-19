@@ -2,8 +2,17 @@ import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { JsonToolCard } from './src/components/JsonToolCard';
 import type { InstalledApp } from './src/native/AppManager';
-import { getInstalledAppsTool, openApplicationTool } from './src/tools/registry';
+import {
+  getContactsTool,
+  getCurrentLocationTool,
+  getDeviceInfoTool,
+  getInstalledAppsTool,
+  openApplicationTool,
+} from './src/tools/registry';
+
+const otherTools = [getDeviceInfoTool, getCurrentLocationTool, getContactsTool];
 
 export default function App() {
   const [apps, setApps] = useState<InstalledApp[]>([]);
@@ -54,72 +63,78 @@ export default function App() {
       <View style={styles.header}>
         <Text style={styles.eyebrow}>AI-OS tool bench</Text>
         <Text style={styles.title}>Phone capability layer</Text>
-        <Text style={styles.subtitle}>Run the first native Android tool and inspect the device surface.</Text>
+        <Text style={styles.subtitle}>Run native Android tools and inspect the device surface.</Text>
       </View>
 
-      <View style={styles.toolCard}>
-        <View style={styles.toolInfo}>
-          <Text style={styles.toolName}>{getInstalledAppsTool.name}</Text>
-          <Text style={styles.toolDescription}>{getInstalledAppsTool.description}</Text>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        {otherTools.map((tool) => (
+          <JsonToolCard key={tool.name} tool={tool} />
+        ))}
+
+        <View style={styles.toolCard}>
+          <View style={styles.toolInfo}>
+            <Text style={styles.toolName}>{getInstalledAppsTool.name}</Text>
+            <Text style={styles.toolDescription}>{getInstalledAppsTool.description}</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            disabled={isLoading}
+            onPress={runInstalledAppsTool}
+            style={({ pressed }) => [
+              styles.runButton,
+              isLoading && styles.runButtonDisabled,
+              pressed && !isLoading && styles.runButtonPressed,
+            ]}
+          >
+            <Text style={styles.runButtonText}>{isLoading ? 'Running...' : 'Run tool'}</Text>
+          </Pressable>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          disabled={isLoading}
-          onPress={runInstalledAppsTool}
-          style={({ pressed }) => [
-            styles.runButton,
-            isLoading && styles.runButtonDisabled,
-            pressed && !isLoading && styles.runButtonPressed,
-          ]}
-        >
-          <Text style={styles.runButtonText}>{isLoading ? 'Running...' : 'Run tool'}</Text>
-        </Pressable>
-      </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {status ? <Text style={styles.status}>{status}</Text> : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {status ? <Text style={styles.status}>{status}</Text> : null}
 
-      <View style={styles.resultsHeader}>
-        <Text style={styles.resultsTitle}>Installed apps</Text>
-        <Text style={styles.resultsCount}>{apps.length}</Text>
-      </View>
-      {apps.length > 0 ? (
-        <Text style={styles.resultsHint}>Tap an app to launch it with open_application.</Text>
-      ) : null}
-
-      <ScrollView contentContainerStyle={styles.resultsList}>
-        {apps.map((app) => {
-          const isLaunching = launchingPackage === app.packageName;
-          const initial = app.name.trim().slice(0, 1).toUpperCase() || '?';
-
-          return (
-            <Pressable
-              key={app.packageName}
-              accessibilityRole="button"
-              disabled={!app.launchable || launchingPackage !== null}
-              onPress={() => launchApp(app)}
-              style={({ pressed }) => [
-                styles.appRow,
-                !app.launchable && styles.appRowDisabled,
-                pressed && app.launchable && launchingPackage === null && styles.appRowPressed,
-              ]}
-            >
-              <View style={styles.appInitial}>
-                <Text style={styles.appInitialText}>{initial}</Text>
-              </View>
-              <View style={styles.appDetails}>
-                <Text style={styles.appName}>{app.name}</Text>
-                <Text style={styles.packageName}>{app.packageName}</Text>
-              </View>
-              <Text style={styles.appAction}>
-                {isLaunching ? 'Opening...' : app.launchable ? 'Open' : 'No launcher'}
-              </Text>
-            </Pressable>
-          );
-        })}
-        {apps.length === 0 && !error ? (
-          <Text style={styles.emptyState}>Run the tool to list launchable Android apps.</Text>
+        <View style={styles.resultsHeader}>
+          <Text style={styles.resultsTitle}>Installed apps</Text>
+          <Text style={styles.resultsCount}>{apps.length}</Text>
+        </View>
+        {apps.length > 0 ? (
+          <Text style={styles.resultsHint}>Tap an app to launch it with open_application.</Text>
         ) : null}
+
+        <View style={styles.resultsList}>
+          {apps.map((app) => {
+            const isLaunching = launchingPackage === app.packageName;
+            const initial = app.name.trim().slice(0, 1).toUpperCase() || '?';
+
+            return (
+              <Pressable
+                key={app.packageName}
+                accessibilityRole="button"
+                disabled={!app.launchable || launchingPackage !== null}
+                onPress={() => launchApp(app)}
+                style={({ pressed }) => [
+                  styles.appRow,
+                  !app.launchable && styles.appRowDisabled,
+                  pressed && app.launchable && launchingPackage === null && styles.appRowPressed,
+                ]}
+              >
+                <View style={styles.appInitial}>
+                  <Text style={styles.appInitialText}>{initial}</Text>
+                </View>
+                <View style={styles.appDetails}>
+                  <Text style={styles.appName}>{app.name}</Text>
+                  <Text style={styles.packageName}>{app.packageName}</Text>
+                </View>
+                <Text style={styles.appAction}>
+                  {isLaunching ? 'Opening...' : app.launchable ? 'Open' : 'No launcher'}
+                </Text>
+              </Pressable>
+            );
+          })}
+          {apps.length === 0 && !error ? (
+            <Text style={styles.emptyState}>Run the tool to list launchable Android apps.</Text>
+          ) : null}
+        </View>
       </ScrollView>
     </View>
   );
@@ -131,6 +146,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f7f4ef',
     paddingHorizontal: 20,
     paddingTop: 64,
+  },
+  scrollContent: {
+    paddingBottom: 32,
   },
   header: {
     marginBottom: 24,
