@@ -1,6 +1,6 @@
-export type ToolDefinition<TResult> = {
+export type ToolDefinition<TInput = void, TResult = unknown> = {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute: () => Promise<TResult>;
+  execute: (input: TInput) => Promise<TResult>;
 };

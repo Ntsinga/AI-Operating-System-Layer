@@ -6,8 +6,14 @@ export type InstalledApp = {
   launchable: boolean;
 };
 
+export type OpenApplicationResult = {
+  packageName: string;
+  launched: boolean;
+};
+
 type AppManagerNativeModule = {
   getInstalledApps: () => Promise<InstalledApp[]>;
+  openApplication: (packageName: string) => Promise<OpenApplicationResult>;
 };
 
 const { AppManager } = NativeModules as { AppManager?: AppManagerNativeModule };

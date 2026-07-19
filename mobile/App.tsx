@@ -3,31 +3,48 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { InstalledApp } from './src/native/AppManager';
-import { tools } from './src/tools/registry';
-
-const installedAppsTool = tools.find((tool) => tool.name === 'get_installed_apps');
+import { getInstalledAppsTool, openApplicationTool } from './src/tools/registry';
 
 export default function App() {
   const [apps, setApps] = useState<InstalledApp[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [launchingPackage, setLaunchingPackage] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   async function runInstalledAppsTool() {
-    if (!installedAppsTool) {
-      setError('get_installed_apps is not registered.');
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
+    setStatus(null);
 
     try {
-      const result = await installedAppsTool.execute();
+      const result = await getInstalledAppsTool.execute();
       setApps(result);
     } catch (toolError) {
       setError(toolError instanceof Error ? toolError.message : 'Failed to run get_installed_apps.');
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function launchApp(app: InstalledApp) {
+    if (launchingPackage) {
+      return;
+    }
+
+    setLaunchingPackage(app.packageName);
+    setError(null);
+    setStatus(null);
+
+    try {
+      await openApplicationTool.execute({ packageName: app.packageName });
+      setStatus(`Launched ${app.name}`);
+    } catch (toolError) {
+      setError(
+        toolError instanceof Error ? toolError.message : `Failed to open ${app.name}.`
+      );
+    } finally {
+      setLaunchingPackage(null);
     }
   }
 
@@ -42,8 +59,8 @@ export default function App() {
 
       <View style={styles.toolCard}>
         <View style={styles.toolInfo}>
-          <Text style={styles.toolName}>{installedAppsTool?.name}</Text>
-          <Text style={styles.toolDescription}>{installedAppsTool?.description}</Text>
+          <Text style={styles.toolName}>{getInstalledAppsTool.name}</Text>
+          <Text style={styles.toolDescription}>{getInstalledAppsTool.description}</Text>
         </View>
         <Pressable
           accessibilityRole="button"
@@ -60,24 +77,46 @@ export default function App() {
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      {status ? <Text style={styles.status}>{status}</Text> : null}
 
       <View style={styles.resultsHeader}>
         <Text style={styles.resultsTitle}>Installed apps</Text>
         <Text style={styles.resultsCount}>{apps.length}</Text>
       </View>
+      {apps.length > 0 ? (
+        <Text style={styles.resultsHint}>Tap an app to launch it with open_application.</Text>
+      ) : null}
 
       <ScrollView contentContainerStyle={styles.resultsList}>
-        {apps.map((app) => (
-          <View key={app.packageName} style={styles.appRow}>
-            <View style={styles.appInitial}>
-              <Text style={styles.appInitialText}>{app.name.slice(0, 1).toUpperCase()}</Text>
-            </View>
-            <View style={styles.appDetails}>
-              <Text style={styles.appName}>{app.name}</Text>
-              <Text style={styles.packageName}>{app.packageName}</Text>
-            </View>
-          </View>
-        ))}
+        {apps.map((app) => {
+          const isLaunching = launchingPackage === app.packageName;
+          const initial = app.name.trim().slice(0, 1).toUpperCase() || '?';
+
+          return (
+            <Pressable
+              key={app.packageName}
+              accessibilityRole="button"
+              disabled={!app.launchable || launchingPackage !== null}
+              onPress={() => launchApp(app)}
+              style={({ pressed }) => [
+                styles.appRow,
+                !app.launchable && styles.appRowDisabled,
+                pressed && app.launchable && launchingPackage === null && styles.appRowPressed,
+              ]}
+            >
+              <View style={styles.appInitial}>
+                <Text style={styles.appInitialText}>{initial}</Text>
+              </View>
+              <View style={styles.appDetails}>
+                <Text style={styles.appName}>{app.name}</Text>
+                <Text style={styles.packageName}>{app.packageName}</Text>
+              </View>
+              <Text style={styles.appAction}>
+                {isLaunching ? 'Opening...' : app.launchable ? 'Open' : 'No launcher'}
+              </Text>
+            </Pressable>
+          );
+        })}
         {apps.length === 0 && !error ? (
           <Text style={styles.emptyState}>Run the tool to list launchable Android apps.</Text>
         ) : null}
@@ -170,10 +209,27 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     padding: 12,
   },
+  status: {
+    backgroundColor: '#eef4e6',
+    borderColor: '#c3d4a8',
+    borderRadius: 8,
+    borderWidth: 1,
+    color: '#3c5226',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+    padding: 12,
+  },
   resultsHeader: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  resultsHint: {
+    color: '#70695f',
+    fontSize: 13,
+    lineHeight: 18,
     marginBottom: 10,
   },
   resultsTitle: {
@@ -202,6 +258,20 @@ const styles = StyleSheet.create({
     gap: 12,
     minHeight: 68,
     padding: 12,
+  },
+  appRowDisabled: {
+    opacity: 0.55,
+  },
+  appRowPressed: {
+    backgroundColor: '#f3efe6',
+    transform: [{ scale: 0.995 }],
+  },
+  appAction: {
+    color: '#5f6f52',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0,
+    textTransform: 'uppercase',
   },
   appInitial: {
     alignItems: 'center',

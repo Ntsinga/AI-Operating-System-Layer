@@ -65,3 +65,32 @@ Chronological incident log for product issues and task-execution failures. Newes
     block — so edit `AndroidManifest.xml` directly. If `expo prebuild` is ever re-run it may
     overwrite this; re-apply the launcher `<queries>` intent afterward (or move it into an Expo
     config plugin).
+
+---
+
+## 2026-07-19 — open_application "fails" on Calendar (launched app's own onboarding blocks)
+
+- **Area**: Native Bridge / Android (NOT a bug — expected behavior, logged to avoid re-diagnosis)
+- **Symptoms**: Tapping an app in the tool bench to launch it via `open_application` worked for
+  Chrome but appeared to "fail" for Google Calendar — Calendar got stuck on a "Checking info…"
+  screen and never reached its main UI.
+- **Root cause**: `open_application` fires the target app's launcher intent
+  (`getLaunchIntentForPackage` + `startActivity`) — the same thing tapping the app's home-screen
+  icon does. Logcat confirmed the launch succeeded: `START ... pkg=com.google.android.calendar ...
+  from uid ... (com.ntsinga.mobile) ... result code=0`, with no exception and no promise
+  rejection from `AppManagerModule`. Calendar then redirected itself into Google Play Services'
+  add-account flow (`gms.auth.uiflows.minutemaid.MinuteMaidActivity` → `ErrorActivity` →
+  `PreAddAccountActivity`) because Google Calendar requires a signed-in Google account, and this
+  emulator has none. That account-setup screen ("Checking info…") hangs on a bare emulator.
+- **Resolution**: None needed in our code. The tool did exactly its job. Chrome works because it
+  does not force account setup; account-gated Google apps (Calendar, Gmail) hang until a Google
+  account is signed into the emulator (Settings → Accounts).
+- **Lessons**:
+  - `open_application`'s success contract is "launcher intent delivered", NOT "app reached its
+    main screen" — the same guarantee the Android home screen makes. What the launched app does
+    next (onboarding, permission gates, account setup, splash hangs) is outside our control and
+    must not be treated as a tool failure.
+  - When a launched app appears stuck, check `adb logcat | grep "ActivityTaskManager: START"` for
+    `result code=0` (our launch succeeded) and look for a follow-on redirect into `gms.auth` /
+    setup activities before assuming the tool is broken.
+  - For testing account-gated apps on an emulator, sign into a Google account first.
