@@ -10,7 +10,32 @@ class AppToolsPackage : ReactPackage {
     AppManagerModule(reactContext),
     DeviceInfoModule(reactContext),
     LocationModule(reactContext),
-    ContactsModule(reactContext)
+    ContactsModule(reactContext),
+    AudioModule(reactContext),
+    DeepLinkModule(reactContext),
+    SmsModule(reactContext),
+    SystemSettingsModule(reactContext),
+    MediaCaptureModule(reactContext),
+    PhoneCallModule(reactContext),
+    AudioRecorderModule(reactContext),
+    OverlayModule(reactContext),
+    VoiceActivationModule(reactContext),
+    WallpaperModule(reactContext),
+    BrowserModule(reactContext),
+    StorageInfoModule(reactContext),
+    NetworkInfoModule(reactContext),
+    NetworkActionsModule(reactContext),
+    BatteryDiagnosticsModule(reactContext),
+    UsageStatsModule(reactContext),
+    StorageCleanupModule(reactContext),
+    DevicePolicyModule(reactContext),
+    FocusPolicyModule(reactContext),
+    AlarmModule(reactContext),
+    ScheduledAlarmModule(reactContext),
+    AppHealthModule(reactContext),
+    CalendarModule(reactContext),
+    BriefStoreModule(reactContext),
+    SmsInboxModule(reactContext)
   )
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()
