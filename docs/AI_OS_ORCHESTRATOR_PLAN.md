@@ -854,7 +854,9 @@ mobile controls for starting/finishing teaching, plus draft review/approval. Rem
 safe replay is now available for approved tap/scroll procedures through semantic selectors, and
 text-input steps can receive one-time runtime values supplied by the user. Typed values are not
 stored in procedure memory. Remaining work is completion detection and robust UI-node selectors
-on more Android versions.
+on more Android versions. The planner now has `list_learned_procedures` and
+`replay_learned_procedure`, allowing it to extract current-request values such as “Home” and
+propose a replay while preserving the normal confirmation boundary.
 
 ### Phase 6 — Adaptive Memory / Workflow Diff
 

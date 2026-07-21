@@ -32,6 +32,8 @@ import { searchGmail, readGmail, searchDrive, readDrive, getGoogleCalendarUpcomi
 import { getMonthlyFinances, analyzeSmsFinances, analyzeFinances, extractReceipt, type MonthlyFinance } from '../planner/expenseClient';
 import { getSmsInboxModule, type SmsMessage } from '../native/SmsInbox';
 import type { ToolDefinition } from './types';
+import { listLearnedProcedures } from '../planner/learningClient';
+import { replayLearningActions } from '../native/LearningWatcher';
 
 export type OpenApplicationInput = {
   packageName: string;
@@ -77,6 +79,11 @@ export type BrowseForImageInput = {
 
 export type OpenUrlInput = {
   url: string;
+};
+
+export type ReplayLearnedProcedureInput = {
+  procedureId: number;
+  runtimeValues?: Record<string, string>;
 };
 
 export type SearchWebInput = {
@@ -626,6 +633,34 @@ export const openUrlInAiosBrowserTool = {
   execute: (input: OpenUrlInput) => getImageBrowserModule().openUrlInAiosBrowser(input.url),
 } satisfies ToolDefinition<OpenUrlInput, OpenAiosBrowserResult>;
 
+export const listLearnedProceduresTool = {
+  name: 'list_learned_procedures',
+  description: 'Lists approved learned phone-use procedures. Use this before replaying a learned app workflow.',
+  parameters: { type: 'object', properties: {}, required: [] },
+  execute: () => listLearnedProcedures(),
+} satisfies ToolDefinition<Record<string, never>, unknown>;
+
+export const replayLearnedProcedureTool = {
+  name: 'replay_learned_procedure',
+  description: 'Replays an approved learned phone-use procedure through AccessibilityService. Provide one-time runtimeValues for fields that must be typed, such as a destination. Never use this for payment submission without a separate user confirmation.',
+  parameters: {
+    type: 'object',
+    properties: {
+      procedureId: { type: 'number', description: 'ID returned by list_learned_procedures.' },
+      runtimeValues: { type: 'object', description: 'One-time values keyed by recorded resource ID, for example {"com.safeboda:id/destination":"Home"}. These values are not saved.' },
+    },
+    required: ['procedureId'],
+  },
+  execute: async (input: ReplayLearnedProcedureInput) => {
+    const procedures = await listLearnedProcedures();
+    const procedure = procedures.find((candidate) => candidate.id === input.procedureId);
+    if (!procedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
+    if (procedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
+    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {});
+    return { procedureId: procedure.id, intent: procedure.intent, ...result, requiresManualConfirmation: result.skipped > 0 };
+  },
+} satisfies ToolDefinition<ReplayLearnedProcedureInput, unknown>;
+
 // Registry of all capabilities. The future LLM planner inspects this list
 // before choosing a tool, so keep names/descriptions/parameters accurate.
 export const tools: ToolDefinition<any, any>[] = [
@@ -687,4 +722,6 @@ export const tools: ToolDefinition<any, any>[] = [
   browseForImageTool,
   openUrlExternalTool,
   openUrlInAiosBrowserTool,
+  listLearnedProceduresTool,
+  replayLearnedProcedureTool,
 ];

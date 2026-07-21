@@ -625,4 +625,6 @@ Phase 5 now has a user-visible teaching card, semantic AccessibilityService even
 backend session ingestion, automatic procedure-draft creation, and draft approval/deletion. The
 watcher is consent-gated and records only event metadata; safe replay and cross-version selector
 adaptation remain future work. Approved procedures can now replay semantic tap/scroll actions and
-set text using one-time runtime values supplied at replay; typed values are not stored.
+set text using one-time runtime values supplied at replay; typed values are not stored. The
+planner registry now exposes procedure discovery and replay so natural-language commands can
+provide those runtime values.
