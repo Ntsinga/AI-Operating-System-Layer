@@ -20,7 +20,7 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     for (index in 0 until array.length()) result.pushMap(Arguments.makeNativeMap(array.getJSONObject(index).toMap()))
     promise.resolve(result)
   }
-  @ReactMethod fun replayActions(actions: ReadableArray, promise: Promise) {
+  @ReactMethod fun replayActions(actions: ReadableArray, values: ReadableMap, promise: Promise) {
     val service = LearningWatcherService.instance
     if (service == null) { promise.reject("LEARNING_WATCHER_DISABLED", "Enable AI-OS in Android Accessibility settings first."); return }
     val mapped = mutableListOf<Map<String, String>>()
@@ -30,7 +30,9 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
       for (key in listOf("action", "text", "resourceId")) if (item.hasKey(key) && !item.isNull(key)) map[key] = item.getString(key) ?: ""
       mapped.add(map)
     }
-    promise.resolve(Arguments.makeNativeMap(service.replay(mapped)))
+    val runtimeValues = mutableMapOf<String, String>()
+    for (key in values.toHashMap().keys) if (!values.isNull(key)) runtimeValues[key] = values.getString(key) ?: ""
+    promise.resolve(Arguments.makeNativeMap(service.replay(mapped, runtimeValues)))
   }
   private fun org.json.JSONObject.toMap(): Map<String, Any> = keys().asSequence().associateWith { get(it) as Any }
 }

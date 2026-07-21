@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures } from '../planner/learningClient';
 import { openAccessibilitySettings, replayLearningActions } from '../native/LearningWatcher';
 import { colors } from '../theme';
@@ -9,6 +9,7 @@ type Procedure = { id: number; intent: string; steps: Array<{ arguments?: Record
 export function LearnedProceduresCard() {
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeValues, setRuntimeValues] = useState('{}');
 
   const refresh = useCallback(async () => {
     try { setProcedures(await listLearnedProcedures()); setError(null); }
@@ -27,8 +28,9 @@ export function LearnedProceduresCard() {
   }
   async function replay(procedure: Procedure) {
     try {
-      const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}));
-      setError(`Replay complete: ${result.executed} actions executed, ${result.skipped} skipped. Text entry requires manual confirmation.`);
+      const values = JSON.parse(runtimeValues) as Record<string, string>;
+      const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values);
+      setError(`Replay complete: ${result.executed} actions executed, ${result.skipped} skipped. Runtime text values were supplied only for this replay.`);
     } catch (replayError) {
       setError(replayError instanceof Error ? replayError.message : 'Enable Accessibility to replay.');
       await openAccessibilitySettings().catch(() => undefined);
@@ -39,6 +41,7 @@ export function LearnedProceduresCard() {
     <Text style={styles.title}>Learned procedures</Text>
     <Text style={styles.description}>Review or delete what AI-OS has learned. No screenshots or tool results are stored.</Text>
     {error ? <Text style={styles.error}>{error}</Text> : null}
+    <TextInput style={styles.valuesInput} value={runtimeValues} onChangeText={setRuntimeValues} placeholder='Runtime text values, e.g. {"com.safeboda:id/destination":"Home"}' placeholderTextColor={colors.textMuted} autoCapitalize="none" />
     {procedures.length === 0 ? <Text style={styles.empty}>No procedures saved yet.</Text> : procedures.slice(0, 10).map((procedure) => (
       <View key={procedure.id} style={styles.row}>
         <View style={styles.copy}><Text style={styles.intent} numberOfLines={2}>{procedure.intent}</Text><Text style={styles.meta}>v{procedure.version} · {procedure.state} · {procedure.outcome} · {procedure.scope}</Text></View>
@@ -61,5 +64,6 @@ const styles = StyleSheet.create({
   delete: { borderColor: colors.dangerBorder, borderRadius: 8, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 7 }, deleteText: { color: colors.dangerText, fontSize: 12 },
   approve: { borderColor: colors.positiveBorder, borderRadius: 8, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 7 }, approveText: { color: colors.positive, fontSize: 12 },
   replay: { borderColor: colors.borderStrong, borderRadius: 8, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 7 }, replayText: { color: colors.accent, fontSize: 12 },
+  valuesInput: { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: 8, borderWidth: 1, color: colors.textPrimary, fontSize: 11, marginTop: 10, padding: 9 },
   refresh: { alignSelf: 'flex-start', marginTop: 12 }, refreshText: { color: colors.accent, fontSize: 12, fontWeight: '700' },
 });

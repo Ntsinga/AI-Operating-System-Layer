@@ -624,5 +624,5 @@ Multi-user authentication and key rotation remain deployment hardening.
 Phase 5 now has a user-visible teaching card, semantic AccessibilityService event capture,
 backend session ingestion, automatic procedure-draft creation, and draft approval/deletion. The
 watcher is consent-gated and records only event metadata; safe replay and cross-version selector
-adaptation remain future work. Approved procedures can now replay semantic tap/scroll actions;
-text-entry actions are intentionally skipped pending explicit user confirmation.
+adaptation remain future work. Approved procedures can now replay semantic tap/scroll actions and
+set text using one-time runtime values supplied at replay; typed values are not stored.

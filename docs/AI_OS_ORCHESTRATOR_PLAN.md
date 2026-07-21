@@ -851,9 +851,10 @@ contract is now available through `/learning/sessions`: start a teaching session
 semantic actions, and complete it into a saved procedure draft. AI-OS now includes a consented
 AccessibilityService watcher, an Accessibility settings handoff, a live action counter, and
 mobile controls for starting/finishing teaching, plus draft review/approval. Remaining work is
-safe replay is now available for approved tap/scroll procedures through semantic selectors;
-text-entry steps are skipped for manual confirmation. Remaining work is completion detection and
-robust UI-node selectors on more Android versions.
+safe replay is now available for approved tap/scroll procedures through semantic selectors, and
+text-input steps can receive one-time runtime values supplied by the user. Typed values are not
+stored in procedure memory. Remaining work is completion detection and robust UI-node selectors
+on more Android versions.
 
 ### Phase 6 — Adaptive Memory / Workflow Diff
 
