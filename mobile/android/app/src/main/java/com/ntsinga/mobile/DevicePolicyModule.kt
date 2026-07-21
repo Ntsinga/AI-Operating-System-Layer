@@ -34,7 +34,7 @@ class DevicePolicyModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun setApplicationSuspended(packageName: String, suspended: Boolean, promise: Promise) {
-    setApplicationsSuspended(arrayOf(packageName), suspended, promise)
+    setApplicationsSuspended(Arguments.createArray().apply { pushString(packageName) }, suspended, promise)
   }
 
   @ReactMethod

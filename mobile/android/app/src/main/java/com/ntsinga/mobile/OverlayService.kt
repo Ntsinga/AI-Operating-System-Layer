@@ -67,11 +67,6 @@ class OverlayService : Service() {
     isRunning = true
   }
 
-  override fun onDestroy() {
-    activeService = null
-    super.onDestroy()
-  }
-
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
       stopSelf()
@@ -237,6 +232,7 @@ class OverlayService : Service() {
   }
 
   override fun onDestroy() {
+    activeService = null
     bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
     bubbleView = null
     isRunning = false
