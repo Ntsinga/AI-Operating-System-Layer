@@ -10,9 +10,9 @@ export type ProposedToolCall = {
 export type ToolCallRecord = ProposedToolCall & { result: unknown };
 
 export type WorkflowResponse =
-  | { threadId: string; status: 'awaiting_confirmation'; proposedTool: ProposedToolCall; history: ToolCallRecord[] }
-  | { threadId: string; status: 'awaiting_reply'; message: string; history: ToolCallRecord[] }
-  | { threadId: string; status: 'done'; finalMessage: string; history: ToolCallRecord[] };
+  | { threadId: string; status: 'awaiting_confirmation'; proposedTool: ProposedToolCall; history: ToolCallRecord[]; reusedProcedureCount: number }
+  | { threadId: string; status: 'awaiting_reply'; message: string; history: ToolCallRecord[]; reusedProcedureCount: number }
+  | { threadId: string; status: 'done'; finalMessage: string; history: ToolCallRecord[]; reusedProcedureCount: number };
 
 async function postJson(path: string, body: unknown): Promise<WorkflowResponse> {
   let response: Response;

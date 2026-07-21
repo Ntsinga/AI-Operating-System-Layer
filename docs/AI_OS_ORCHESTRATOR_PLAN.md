@@ -835,8 +835,9 @@ adds reliability and network effects without sharing private user data.
 
 Persist privacy-minimized execution traces (short intent, tool names, arguments, outcome),
 retrieve matching procedures at workflow start, and provide them to the planner as verifiable
-hints. Never store screenshots, credentials, message bodies, tool results, or raw personal
-content in this layer; production storage must be encrypted per user.
+hints. The app now reports when a procedure was reused, and users can list, search, or delete
+learned procedures. Never store screenshots, credentials, message bodies, tool results, or raw
+personal content in this layer; production storage must be encrypted per user.
 
 ### Phase 5 — Learning Mode / Workflow Recorder
 

@@ -27,6 +27,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
   const [finalMessage, setFinalMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [transcribedNotice, setTranscribedNotice] = useState<string | null>(null);
+  const [reusedProcedureCount, setReusedProcedureCount] = useState(0);
 
   function handleTranscribed(text: string) {
     setError(null);
@@ -38,6 +39,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
 
   function handleVoiceError(message: string) {
     setTranscribedNotice(null);
+    setReusedProcedureCount(0);
     setError(message);
   }
 
@@ -55,6 +57,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
   function applyResponse(response: WorkflowResponse) {
     setThreadId(response.threadId);
     setCompletedSteps(response.history);
+    setReusedProcedureCount(response.reusedProcedureCount ?? 0);
     setProposal(null);
     setAssistantMessage(null);
 
@@ -211,6 +214,12 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
       />
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      {reusedProcedureCount > 0 ? (
+        <Text style={styles.memoryNotice}>
+          Reusing {reusedProcedureCount} learned procedure{reusedProcedureCount === 1 ? '' : 's'}; current state will be verified.
+        </Text>
+      ) : null}
 
       {completedSteps.length > 0 ? (
         <View style={styles.stepsBox}>
@@ -370,6 +379,11 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: 12,
     padding: 10,
+  },
+  memoryNotice: {
+    color: colors.accent,
+    fontSize: 12,
+    marginTop: 8,
   },
   stepsBox: {
     backgroundColor: colors.surfaceAlt,

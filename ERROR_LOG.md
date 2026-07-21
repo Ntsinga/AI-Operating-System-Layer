@@ -611,3 +611,6 @@ Added a local, privacy-minimized procedure store and planner hints. It persists 
 tool names, and arguments from completed runs; screenshots, credentials, tool results, and raw
 private content are intentionally excluded. This is development storage and must move to encrypted,
 per-user storage before multi-user deployment.
+
+The follow-up slice adds procedure listing, search, deletion, and a mobile reuse indicator so
+the user can see and control learned memory instead of having it operate invisibly.

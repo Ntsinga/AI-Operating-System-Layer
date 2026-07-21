@@ -19,7 +19,7 @@ from app.google_api import calendar_upcoming, drive_search, gmail_search, gmail_
 from app.expenses import monthly_finances  # noqa: E402
 from app.receipt import extract_receipt  # noqa: E402
 from app.sms_finances import sms_finances  # noqa: E402
-from app.procedural_memory import save_procedure, search_procedures  # noqa: E402
+from app.procedural_memory import delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
 
@@ -171,6 +171,22 @@ class WorkflowResponse(BaseModel):
     message: Optional[str] = None
     finalMessage: Optional[str] = None
     history: Optional[list[dict[str, Any]]] = None
+    reusedProcedureCount: int = 0
+
+
+@app.get("/procedures")
+def procedures_list() -> list[dict[str, Any]]:
+    return list_procedures()
+
+
+@app.get("/procedures/search")
+def procedures_search(query: str, limit: int = 3) -> list[dict[str, Any]]:
+    return search_procedures(query, max(1, min(limit, 10)))
+
+
+@app.delete("/procedures/{procedure_id}")
+def procedures_delete(procedure_id: int) -> dict[str, bool]:
+    return {"deleted": delete_procedure(procedure_id)}
 
 
 def _format_response(thread_id: str) -> WorkflowResponse:
@@ -190,6 +206,7 @@ def _format_response(thread_id: str) -> WorkflowResponse:
                 status="awaiting_confirmation",
                 proposedTool=interrupt_value["proposedTool"],
                 history=snapshot.values.get("history", []),
+                reusedProcedureCount=len(snapshot.values.get("proceduralMemory", [])),
             )
         if kind == "awaiting_reply":
             return WorkflowResponse(
@@ -197,6 +214,7 @@ def _format_response(thread_id: str) -> WorkflowResponse:
                 status="awaiting_reply",
                 message=interrupt_value["message"],
                 history=snapshot.values.get("history", []),
+                reusedProcedureCount=len(snapshot.values.get("proceduralMemory", [])),
             )
         raise HTTPException(500, f"Unknown interrupt kind: {kind!r}")
 
@@ -224,6 +242,7 @@ def _format_response(thread_id: str) -> WorkflowResponse:
         status="done",
         finalMessage=final_message,
         history=history,
+        reusedProcedureCount=len(values.get("proceduralMemory", [])),
     )
 
 
