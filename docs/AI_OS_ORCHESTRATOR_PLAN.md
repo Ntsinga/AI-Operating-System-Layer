@@ -850,8 +850,8 @@ conditions, and completion evidence rather than brittle coordinates. The first r
 contract is now available through `/learning/sessions`: start a teaching session, append
 semantic actions, and complete it into a saved procedure draft. AI-OS now includes a consented
 AccessibilityService watcher, an Accessibility settings handoff, a live action counter, and
-mobile controls for starting/finishing teaching. Remaining work is review/approval before replay,
-completion detection, and robust UI-node selectors on more Android versions.
+mobile controls for starting/finishing teaching, plus draft review/approval. Remaining work is
+safe replay, completion detection, and robust UI-node selectors on more Android versions.
 
 ### Phase 6 — Adaptive Memory / Workflow Diff
 

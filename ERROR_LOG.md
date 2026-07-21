@@ -622,6 +622,6 @@ scope, deduplication, versioning, and Fernet encryption when the production key 
 Multi-user authentication and key rotation remain deployment hardening.
 
 Phase 5 now has a user-visible teaching card, semantic AccessibilityService event capture,
-backend session ingestion, and automatic procedure-draft creation. The watcher is consent-gated
-and records only event metadata; replay approval and cross-version selector adaptation remain
-future work.
+backend session ingestion, automatic procedure-draft creation, and draft approval/deletion. The
+watcher is consent-gated and records only event metadata; safe replay and cross-version selector
+adaptation remain future work.

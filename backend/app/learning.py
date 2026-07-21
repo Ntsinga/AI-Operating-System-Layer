@@ -66,5 +66,5 @@ def complete_session(session_id: str) -> dict[str, Any]:
         connection.execute("UPDATE learning_sessions SET status = 'completed' WHERE id = ?", (session_id,))
     from app.procedural_memory import save_procedure
     history = [{"toolName": action.get("action", "ui_action"), "arguments": action} for action in actions]
-    save_procedure(row[0], history, success=True, scope=row[1] or "local", outcome="taught")
+    save_procedure(row[0], history, success=True, scope=row[1] or "local", outcome="taught", state="draft")
     return {"sessionId": session_id, "intent": row[0], "appPackage": row[1] or None, "actions": actions, "status": "completed", "procedureSaved": True}

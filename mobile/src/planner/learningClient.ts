@@ -33,9 +33,13 @@ export function completeLearningSession(sessionId: string) {
 }
 
 export async function listLearnedProcedures() {
-  return request('/procedures', 'GET') as Promise<Array<{ id: number; intent: string; steps: unknown[]; outcome: string; scope: string; version: number; createdAt: string }>>;
+  return request('/procedures', 'GET') as Promise<Array<{ id: number; intent: string; steps: unknown[]; outcome: string; scope: string; version: number; state: string; createdAt: string }>>;
 }
 
 export function deleteLearnedProcedure(id: number) {
   return request(`/procedures/${id}`, 'DELETE');
+}
+
+export function approveLearnedProcedure(id: number) {
+  return request(`/procedures/${id}/approve`, 'POST');
 }

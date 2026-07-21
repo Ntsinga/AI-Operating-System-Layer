@@ -21,6 +21,10 @@ class LearningWatcherService : AccessibilityService() {
       })
     val label = event.text?.firstOrNull()?.toString()?.take(120)
     if (!label.isNullOrBlank()) action.put("text", label)
+    event.source?.let { node ->
+      node.viewIdResourceName?.take(160)?.let { action.put("resourceId", it) }
+      node.recycle()
+    }
     val queue = JSONArray(prefs.getString(QUEUE, "[]"))
     queue.put(action)
     prefs.edit().putString(QUEUE, queue.toString().take(50000)).apply()

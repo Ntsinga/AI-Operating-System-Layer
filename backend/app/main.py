@@ -19,7 +19,7 @@ from app.google_api import calendar_upcoming, drive_search, gmail_search, gmail_
 from app.expenses import monthly_finances  # noqa: E402
 from app.receipt import extract_receipt  # noqa: E402
 from app.sms_finances import sms_finances  # noqa: E402
-from app.procedural_memory import delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
+from app.procedural_memory import approve_procedure, delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
 from app.learning import append_action, complete_session, start_session  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
@@ -227,6 +227,11 @@ def procedures_search(query: str, limit: int = 3) -> list[dict[str, Any]]:
 @app.delete("/procedures/{procedure_id}")
 def procedures_delete(procedure_id: int) -> dict[str, bool]:
     return {"deleted": delete_procedure(procedure_id)}
+
+
+@app.post("/procedures/{procedure_id}/approve")
+def procedures_approve(procedure_id: int) -> dict[str, bool]:
+    return {"approved": approve_procedure(procedure_id)}
 
 
 def _format_response(thread_id: str) -> WorkflowResponse:
