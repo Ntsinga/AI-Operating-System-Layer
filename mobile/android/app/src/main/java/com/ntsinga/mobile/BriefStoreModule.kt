@@ -24,16 +24,23 @@ class BriefStoreModule(private val context: ReactApplicationContext) : ReactCont
       init(KeyGenParameterSpec.Builder("aios_brief_key", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
     }.generateKey()
   }
-  @ReactMethod fun saveBrief(text: String, promise: Promise) = runCatching {
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
-    prefs.edit().putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP)).putString("data", Base64.encodeToString(cipher.doFinal(text.toByteArray(StandardCharsets.UTF_8)), Base64.NO_WRAP)).apply()
-    OverlayService.updateBrief(context, text)
-    promise.resolve(true)
-  }.onFailure { promise.reject("BRIEF_SAVE_FAILED", it) }
-  @ReactMethod fun getBrief(promise: Promise) = runCatching {
-    val iv = prefs.getString("iv", null) ?: return@runCatching promise.resolve(null)
-    val data = prefs.getString("data", null) ?: return@runCatching promise.resolve(null)
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP))) }
-    promise.resolve(String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), StandardCharsets.UTF_8))
-  }.onFailure { promise.reject("BRIEF_READ_FAILED", it) }
+  @ReactMethod
+  fun saveBrief(text: String, promise: Promise) {
+    runCatching {
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+      prefs.edit().putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP)).putString("data", Base64.encodeToString(cipher.doFinal(text.toByteArray(StandardCharsets.UTF_8)), Base64.NO_WRAP)).apply()
+      OverlayService.updateBrief(context, text)
+      promise.resolve(true)
+    }.onFailure { promise.reject("BRIEF_SAVE_FAILED", it) }
+  }
+
+  @ReactMethod
+  fun getBrief(promise: Promise) {
+    runCatching {
+      val iv = prefs.getString("iv", null) ?: return@runCatching promise.resolve(null)
+      val data = prefs.getString("data", null) ?: return@runCatching promise.resolve(null)
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP))) }
+      promise.resolve(String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), StandardCharsets.UTF_8))
+    }.onFailure { promise.reject("BRIEF_READ_FAILED", it) }
+  }
 }

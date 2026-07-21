@@ -637,3 +637,26 @@ provide those runtime values.
 Added replay completion verification and semantic selector fallback. Added
 `docs/ANDROID_VALIDATION_CHECKLIST.md`; actual AccessibilityService/device behavior remains an
 install-time validation requirement rather than something this Windows workspace can prove.
+
+## 2026-07-22 — Device launch validation, embedded debug bundle, and native module startup
+
+- **Area**: Android build/runtime and device connectivity
+- **Symptoms**: A debug install showed “Unable to load script” when Metro was not reachable;
+  after bundling, the physical device reported a TurboModule parse error for `AiosBriefStore`.
+  The emulator also displayed a stale System UI ANR overlay while its React activity was running.
+- **Root causes**: React Native debug variants normally omit the JS bundle; `BriefStoreModule`
+  used expression-bodied `@ReactMethod`s whose inferred `Result<Unit>` return type violated the
+  TurboModule parser’s synchronous-method contract. The emulator ANR was stale System UI state
+  after repeated launches, not an app exception.
+- **Solutions**: Set `debuggableVariants = []` so `packageDebug` embeds the Expo/Metro bundle;
+  changed `saveBrief` and `getBrief` to explicit `Unit` methods; regenerated the native AI‑OS
+  label/icon resources; configured the mobile client to use the host LAN address
+  `192.168.1.74:8000`; installed and launched the rebuilt APK on emulator and physical device.
+  Installed the missing backend `cryptography` requirement and started FastAPI on port 8000.
+- **Validation**: `:app:packageDebug --offline` succeeded; both ADB targets installed the APK;
+  physical and emulator `mFocusedApp` report `com.ntsinga.mobile/.MainActivity`, and emulator
+  logcat reports `ReactNativeJS: Running "main"` with no script-load or TurboModule errors.
+- **Lessons**: Metro is a development bundler, not the backend. A self-contained debug APK is
+  preferable for device demos; backend reachability must be configured independently using a
+  LAN-reachable server address. React Native `@ReactMethod` methods should always declare an
+  explicit `Unit` return when they resolve through a `Promise`.

@@ -18,6 +18,7 @@ import { searchWeb, type WebSearchResult } from '../planner/searchWebClient';
 import { searchImages, type ImageSearchResult } from '../planner/searchImagesClient';
 import { getStorageInfoModule, type StorageInfoResult } from '../native/StorageInfo';
 import { getNetworkInfoModule, type NetworkInfoResult, type NetworkTestResult } from '../native/NetworkInfo';
+import { BACKEND_BASE_URL } from '../config/backend';
 import { getNetworkActionsModule, type NetworkSettingsResult } from '../native/NetworkActions';
 import { getBatteryDiagnosticsModule, type BatteryDiagnosticsResult } from '../native/BatteryDiagnostics';
 import { getUsageStatsModule, type AppBatterySettingsResult, type AppUsageResult, type BatteryOptimizationStatus } from '../native/UsageStats';
@@ -349,7 +350,7 @@ export const connectGoogleAccountTool = {
   name: 'connect_google_account',
   description: 'Opens Google OAuth consent for Gmail, Google Calendar, and Google Drive. The user signs in and grants only the requested scopes; AI-OS never asks for the Google password.',
   parameters: { type: 'object', properties: {} },
-  execute: () => getDeepLinkModule().openUri('http://10.0.2.2:8000/connect/google/start'),
+  execute: () => getDeepLinkModule().openUri(`${BACKEND_BASE_URL}/connect/google/start`),
 } satisfies ToolDefinition<void, OpenUriResult>;
 
 export type SearchGoogleInput = { query: string; maxResults: number };
