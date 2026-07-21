@@ -21,6 +21,8 @@ mobile/android/app/build/
 
 # Local environment and secrets
 .env
+.google_tokens.enc
+backend/procedural_memory.sqlite3
 .env.*
 !.env.example
 !mobile/.env.example
