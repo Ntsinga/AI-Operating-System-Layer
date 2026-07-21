@@ -633,3 +633,7 @@ adaptation remain future work. Approved procedures can now replay semantic tap/s
 set text using one-time runtime values supplied at replay; typed values are not stored. The
 planner registry now exposes procedure discovery and replay so natural-language commands can
 provide those runtime values.
+
+Added replay completion verification and semantic selector fallback. Added
+`docs/ANDROID_VALIDATION_CHECKLIST.md`; actual AccessibilityService/device behavior remains an
+install-time validation requirement rather than something this Windows workspace can prove.

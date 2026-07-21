@@ -32,7 +32,7 @@ class LearningWatcherService : AccessibilityService() {
     prefs.edit().putString(QUEUE, queue.toString().take(50000)).apply()
   }
   override fun onInterrupt() = Unit
-  fun replay(actions: List<Map<String, String>>, values: Map<String, String>): Map<String, Int> {
+  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null): Map<String, Int> {
     var executed = 0; var skipped = 0
     for (action in actions) {
       val type = action["action"] ?: ""
@@ -58,11 +58,29 @@ class LearningWatcherService : AccessibilityService() {
       if (ok) executed++ else skipped++
       node.recycle()
     }
-    return mapOf("executed" to executed, "skipped" to skipped)
+    val verified = completion?.let { findNode(rootInActiveWindow ?: return@let false, it["resourceId"], it["text"]) != null } ?: false
+    return mapOf("executed" to executed, "skipped" to skipped, "verified" to if (verified || completion == null) 1 else 0)
   }
   private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?): AccessibilityNodeInfo? {
     if (!resourceId.isNullOrBlank()) root.findAccessibilityNodeInfosByViewId(resourceId).firstOrNull()?.let { return it }
     if (!text.isNullOrBlank()) root.findAccessibilityNodeInfosByText(text).firstOrNull()?.let { return it }
+    // Adaptive fallback: app updates often change resource IDs but preserve visible labels,
+    // content descriptions, or the semantic class. Walk the current tree instead of replaying
+    // stale coordinates.
+    return findSemanticFallback(root, text)
+  }
+  private fun findSemanticFallback(node: AccessibilityNodeInfo, text: String?): AccessibilityNodeInfo? {
+    val wanted = text?.trim()?.lowercase()
+    val label = node.text?.toString()?.trim()?.lowercase()
+    val description = node.contentDescription?.toString()?.trim()?.lowercase()
+    if (!wanted.isNullOrBlank() && (label == wanted || description == wanted)) return node
+    for (index in 0 until node.childCount) {
+      node.getChild(index)?.let { child ->
+        val match = findSemanticFallback(child, text)
+        if (match != null) return match
+        child.recycle()
+      }
+    }
     return null
   }
   companion object { var instance: LearningWatcherService? = null; const val PREFS = "learning_watcher"; const val RECORDING = "recording"; const val QUEUE = "queue" }

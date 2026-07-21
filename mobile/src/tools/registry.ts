@@ -84,6 +84,7 @@ export type OpenUrlInput = {
 export type ReplayLearnedProcedureInput = {
   procedureId: number;
   runtimeValues?: Record<string, string>;
+  completionSelector?: { resourceId?: string; text?: string };
 };
 
 export type SearchWebInput = {
@@ -648,6 +649,7 @@ export const replayLearnedProcedureTool = {
     properties: {
       procedureId: { type: 'number', description: 'ID returned by list_learned_procedures.' },
       runtimeValues: { type: 'object', description: 'One-time values keyed by recorded resource ID, for example {"com.safeboda:id/destination":"Home"}. These values are not saved.' },
+      completionSelector: { type: 'object', description: 'Optional selector proving the task completed, using a resourceId or visible text.' },
     },
     required: ['procedureId'],
   },
@@ -656,8 +658,8 @@ export const replayLearnedProcedureTool = {
     const procedure = procedures.find((candidate) => candidate.id === input.procedureId);
     if (!procedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
     if (procedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
-    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {});
-    return { procedureId: procedure.id, intent: procedure.intent, ...result, requiresManualConfirmation: result.skipped > 0 };
+    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector);
+    return { procedureId: procedure.id, intent: procedure.intent, ...result, requiresManualConfirmation: result.skipped > 0 || result.verified === 0 };
   },
 } satisfies ToolDefinition<ReplayLearnedProcedureInput, unknown>;
 
