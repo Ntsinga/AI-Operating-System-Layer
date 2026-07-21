@@ -2,11 +2,13 @@ package com.ntsinga.mobile
 
 import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** Consent-gated semantic recorder. It stores labels/roles only, never screenshots or passwords. */
 class LearningWatcherService : AccessibilityService() {
+  override fun onServiceConnected() { instance = this }
   override fun onAccessibilityEvent(event: AccessibilityEvent) {
     val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
     if (!prefs.getBoolean(RECORDING, false)) return
@@ -30,5 +32,28 @@ class LearningWatcherService : AccessibilityService() {
     prefs.edit().putString(QUEUE, queue.toString().take(50000)).apply()
   }
   override fun onInterrupt() = Unit
-  companion object { const val PREFS = "learning_watcher"; const val RECORDING = "recording"; const val QUEUE = "queue" }
+  fun replay(actions: List<Map<String, String>>): Map<String, Int> {
+    var executed = 0; var skipped = 0
+    for (action in actions) {
+      val type = action["action"] ?: ""
+      if (type == "text_changed") { skipped++; continue }
+      val root = rootInActiveWindow
+      val node = root?.let { findNode(it, action["resourceId"], action["text"]) }
+      if (node == null) { skipped++; continue }
+      val ok = when (type) {
+        "tap" -> node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        "scroll" -> node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        else -> false
+      }
+      if (ok) executed++ else skipped++
+      node.recycle()
+    }
+    return mapOf("executed" to executed, "skipped" to skipped)
+  }
+  private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?): AccessibilityNodeInfo? {
+    if (!resourceId.isNullOrBlank()) root.findAccessibilityNodeInfosByViewId(resourceId).firstOrNull()?.let { return it }
+    if (!text.isNullOrBlank()) root.findAccessibilityNodeInfosByText(text).firstOrNull()?.let { return it }
+    return null
+  }
+  companion object { var instance: LearningWatcherService? = null; const val PREFS = "learning_watcher"; const val RECORDING = "recording"; const val QUEUE = "queue" }
 }
