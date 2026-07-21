@@ -831,7 +831,7 @@ The next capability track turns one-off phone-use execution into reusable proced
 knowledge. Phase 4 is in progress; later phases are deliberately sequenced so each one
 adds reliability and network effects without sharing private user data.
 
-### Phase 4 — Procedural Memory (in progress)
+### Phase 4 — Procedural Memory (complete)
 
 Persist privacy-minimized execution traces (short intent, tool names, arguments, outcome),
 retrieve matching procedures at workflow start, and provide them to the planner as verifiable
@@ -839,10 +839,13 @@ hints. The app now reports when a procedure was reused, and users can list, sear
 learned procedures. Never store screenshots, credentials, message bodies, tool results, or raw
 personal content in this layer; production storage must be encrypted per user.
 
-### Phase 5 — Learning Mode / Workflow Recorder
+### Phase 5 — Learning Mode / Workflow Recorder (in progress)
 
 Let a user teach an unfamiliar app once while AI-OS records semantic UI nodes, actions,
-conditions, and completion evidence rather than brittle coordinates.
+conditions, and completion evidence rather than brittle coordinates. The first recorder
+contract is now available through `/learning/sessions`: start a teaching session, append
+semantic actions, and complete it. The Android AccessibilityService watcher and teaching UI
+are the next implementation slice.
 
 ### Phase 6 — Adaptive Memory / Workflow Diff
 
@@ -896,9 +899,9 @@ planner - since merged into Phase 3's UI, see below), and Phase 3 (LangGraph mul
 orchestration, verified end-to-end with the Ronaldo-style search-then-act workflow) are done.
 The app now also has a Chat/Tools two-tab navigation and a dark theme matching the AI-OS brand.
 
-Next: **Phase 4, Procedural Memory** - validate procedure reuse across repeated workflows,
-then begin Phase 5 with a user-guided recorder for one phone-use task. Phase 3.5 overlay work
-remains available as the interaction surface for teaching and approvals.
+Next: **Phase 5, Learning Mode** - connect the semantic recorder contract to an explicit,
+user-visible Android AccessibilityService teaching session for one phone-use task. Phase 3.5
+overlay work remains available as the interaction surface for teaching and approvals.
 
 Original first milestone (superseded, kept for history):
 

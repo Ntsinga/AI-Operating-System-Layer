@@ -20,6 +20,7 @@ from app.expenses import monthly_finances  # noqa: E402
 from app.receipt import extract_receipt  # noqa: E402
 from app.sms_finances import sms_finances  # noqa: E402
 from app.procedural_memory import delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
+from app.learning import append_action, complete_session, start_session  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
 
@@ -31,6 +32,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class LearningSessionRequest(BaseModel):
+    intent: str
+    appPackage: Optional[str] = None
+
+
+class LearningActionRequest(BaseModel):
+    action: dict[str, Any]
+
+
+@app.post("/learning/sessions")
+def learning_start(req: LearningSessionRequest) -> dict[str, Any]:
+    return start_session(req.intent, req.appPackage)
+
+
+@app.post("/learning/sessions/{session_id}/actions")
+def learning_action(session_id: str, req: LearningActionRequest) -> dict[str, Any]:
+    try:
+        return append_action(session_id, req.action)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+    except ValueError as error:
+        raise HTTPException(409, str(error))
+
+
+@app.post("/learning/sessions/{session_id}/complete")
+def learning_complete(session_id: str) -> dict[str, Any]:
+    try:
+        return complete_session(session_id)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+    except ValueError as error:
+        raise HTTPException(409, str(error))
 
 
 @app.get("/connect/google/start")
