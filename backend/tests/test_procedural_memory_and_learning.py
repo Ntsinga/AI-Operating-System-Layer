@@ -6,7 +6,7 @@ from unittest.mock import patch
 from app import learning, procedural_memory
 
 
-class Phase45MemoryTests(unittest.TestCase):
+class ProceduralMemoryAndLearningTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         db_path = Path(self.temp_dir.name) / "memory.sqlite3"

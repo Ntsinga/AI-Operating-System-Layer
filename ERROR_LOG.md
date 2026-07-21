@@ -621,7 +621,8 @@ resource ID, action, and value), explicitly excluding screenshots and arbitrary 
 scope, deduplication, versioning, and Fernet encryption when the production key is configured.
 Multi-user authentication and key rotation remain deployment hardening.
 
-Added structured API, learning, and procedural-memory logs. Added `backend/tests/test_phase45.py`;
+Added structured API, learning, and procedural-memory logs. Added
+`backend/tests/test_procedural_memory_and_learning.py`;
 the three Phase 4/5 persistence and approval tests pass with `python -m unittest discover -s
 backend/tests -v`. Android and TypeScript checks remain environment-dependent.
 
