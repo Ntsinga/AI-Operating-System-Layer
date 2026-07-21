@@ -55,3 +55,7 @@ export function startWorkflow(command: string, installedApps?: InstalledApp[]): 
 export function resumeWorkflow(threadId: string, result: unknown): Promise<WorkflowResponse> {
   return postJson(`/workflow/${threadId}/resume`, { result });
 }
+
+export function completeWorkflow(threadId: string, outcome: 'succeeded' | 'failed' | 'cancelled' | 'rolled_back' = 'succeeded'): Promise<WorkflowResponse> {
+  return postJson(`/workflow/${threadId}/complete`, { outcome });
+}

@@ -193,10 +193,15 @@ class StartWorkflowRequest(BaseModel):
     command: str
     tools: list[dict[str, Any]]
     installedApps: Optional[list[dict[str, Any]]] = None
+    deviceId: str = "local"
 
 
 class ResumeWorkflowRequest(BaseModel):
     result: Any = None
+
+
+class WorkflowFinalizeRequest(BaseModel):
+    outcome: str = "succeeded"
 
 
 class WorkflowResponse(BaseModel):
@@ -256,12 +261,6 @@ def _format_response(thread_id: str) -> WorkflowResponse:
     # Graph truly ended - only happens by hitting MAX_STEPS (safety cap).
     values = snapshot.values
     history = values.get("history", [])
-    intent = next(
-        (msg.get("content", "") for msg in values.get("messages", []) if msg.get("role") == "user"),
-        "",
-    )
-    if history:
-        save_procedure(intent, history, success=True)
     last_assistant_text = next(
         (
             msg["content"]
@@ -292,6 +291,7 @@ def start_workflow(req: StartWorkflowRequest) -> WorkflowResponse:
         "history": [],
         "stepCount": 0,
         "proceduralMemory": search_procedures(req.command),
+        "procedureScope": req.deviceId[:200] or "local",
     }
     compiled_graph.invoke(initial_state, config=config)
     return _format_response(thread_id)
@@ -305,6 +305,21 @@ def resume_workflow(thread_id: str, req: ResumeWorkflowRequest) -> WorkflowRespo
         raise HTTPException(404, f"No workflow awaiting resume for thread {thread_id}.")
 
     compiled_graph.invoke(Command(resume=req.result), config=config)
+    return _format_response(thread_id)
+
+
+@app.post("/workflow/{thread_id}/complete")
+def complete_workflow(thread_id: str, req: WorkflowFinalizeRequest = WorkflowFinalizeRequest()) -> WorkflowResponse:
+    config = {"configurable": {"thread_id": thread_id}}
+    snapshot = compiled_graph.get_state(config)
+    if not snapshot.values:
+        raise HTTPException(404, f"No workflow found for thread {thread_id}.")
+    values = snapshot.values
+    history = values.get("history", [])
+    if history:
+        intent = next((msg.get("content", "") for msg in values.get("messages", []) if msg.get("role") == "user"), "")
+        outcome = req.outcome if req.outcome in {"succeeded", "failed", "cancelled", "rolled_back"} else "succeeded"
+        save_procedure(intent, history, success=outcome == "succeeded", scope=values.get("procedureScope", "local"), outcome=outcome)
     return _format_response(thread_id)
 
 

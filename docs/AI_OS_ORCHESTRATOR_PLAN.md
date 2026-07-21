@@ -831,15 +831,17 @@ The next capability track turns one-off phone-use execution into reusable proced
 knowledge. Phase 4 is in progress; later phases are deliberately sequenced so each one
 adds reliability and network effects without sharing private user data.
 
-### Phase 4 — Procedural Memory (in progress)
+### Phase 4 — Procedural Memory (complete for local/device-scoped workflows)
 
 Persist privacy-minimized execution traces (short intent, tool names, arguments, outcome),
 retrieve matching procedures at workflow start, and provide them to the planner as verifiable
 hints. The app now reports when a procedure was reused, and users can list, search, or delete
-learned procedures. The remaining completion work is to persist successful workflows at their
-actual completion boundary (not only when the graph reaches its safety cap), record failure and
-rollback outcomes, scope records to a user/device, and encrypt production storage. Never store
-screenshots, credentials, message bodies, tool results, or raw personal content in this layer.
+learned procedures. Workflows have an explicit completion path that records success, failure,
+cancellation, or rollback outcomes; traces are scoped by a caller-provided device/user scope,
+deduplicated, and versioned. Step payloads are Fernet-encrypted when
+`GOOGLE_TOKEN_ENCRYPTION_KEY` is configured. Never store screenshots, credentials, message
+bodies, tool results, or raw personal content in this layer. Multi-user authentication and key
+rotation remain deployment hardening rather than local MVP work.
 
 ### Phase 5 — Learning Mode / Workflow Recorder (in progress)
 
@@ -901,10 +903,9 @@ planner - since merged into Phase 3's UI, see below), and Phase 3 (LangGraph mul
 orchestration, verified end-to-end with the Ronaldo-style search-then-act workflow) are done.
 The app now also has a Chat/Tools two-tab navigation and a dark theme matching the AI-OS brand.
 
-Next: finish **Phase 4, Procedural Memory** by adding an explicit workflow-completion save path,
-outcome-aware traces, and per-user/device storage; then continue **Phase 5, Learning Mode** by
-connecting the semantic recorder contract to an explicit Android AccessibilityService teaching
-session. Phase 3.5 overlay work remains available for teaching and approvals.
+Next: continue **Phase 5, Learning Mode** by connecting the semantic recorder contract to an
+explicit Android AccessibilityService teaching session. Phase 3.5 overlay work remains
+available for teaching and approvals.
 
 Original first milestone (superseded, kept for history):
 

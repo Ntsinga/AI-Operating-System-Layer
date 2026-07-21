@@ -60,6 +60,7 @@ class WorkflowState(TypedDict):
     history: List[ToolCallRecord]
     stepCount: int
     proceduralMemory: List[dict[str, Any]]
+    procedureScope: str
 
 
 def _client() -> OpenAI:

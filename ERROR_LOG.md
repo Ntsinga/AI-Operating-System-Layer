@@ -616,7 +616,7 @@ The follow-up slice adds procedure listing, search, deletion, and a mobile reuse
 the user can see and control learned memory instead of having it operate invisibly.
 
 Phase 5 starts with a semantic learning-session API that accepts only UI metadata (role, label,
-resource ID, action, and value), explicitly excluding screenshots and arbitrary payloads. A
-follow-up audit found Phase 4 is not yet complete: normal workflow completion does not always
-reach the procedure-save path, and outcome-aware plus per-user encrypted storage remain needed.
-Android AccessibilityService capture and the teaching UI remain next after that hardening.
+resource ID, action, and value), explicitly excluding screenshots and arbitrary payloads. Phase
+4 hardening now adds an explicit workflow completion endpoint, outcome-aware traces, device/user
+scope, deduplication, versioning, and Fernet encryption when the production key is configured.
+Multi-user authentication and key rotation remain deployment hardening.

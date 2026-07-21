@@ -3,6 +3,7 @@ import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-nativ
 
 import {
   resumeWorkflow,
+  completeWorkflow,
   startWorkflow,
   type ProposedToolCall,
   type ToolCallRecord,
@@ -166,9 +167,14 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
     }
   }
 
-  function handleStop() {
-    // Local-only: does not notify the backend. The paused checkpoint is simply
-    // abandoned (in-memory checkpointer, so it is not a persistent leak).
+  async function handleStop() {
+    if (threadId && phase === 'awaiting_reply') {
+      try {
+        await completeWorkflow(threadId, 'succeeded');
+      } catch {
+        // The local workflow can still be stopped if the backend is unavailable.
+      }
+    }
     reset();
   }
 
