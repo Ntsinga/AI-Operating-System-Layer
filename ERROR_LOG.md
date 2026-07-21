@@ -620,3 +620,8 @@ resource ID, action, and value), explicitly excluding screenshots and arbitrary 
 4 hardening now adds an explicit workflow completion endpoint, outcome-aware traces, device/user
 scope, deduplication, versioning, and Fernet encryption when the production key is configured.
 Multi-user authentication and key rotation remain deployment hardening.
+
+Phase 5 now has a user-visible teaching card, semantic AccessibilityService event capture,
+backend session ingestion, and automatic procedure-draft creation. The watcher is consent-gated
+and records only event metadata; replay approval and cross-version selector adaptation remain
+future work.

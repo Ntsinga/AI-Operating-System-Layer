@@ -95,6 +95,14 @@
       android:name=".VoiceActivationService"
       android:exported="false"
       android:foregroundServiceType="microphone"/>
+    <service
+      android:name=".LearningWatcherService"
+      android:label="AI-OS learning watcher"
+      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+      android:exported="true">
+      <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+      <meta-data android:name="android.accessibilityservice" android:resource="@xml/learning_watcher_service" />
+    </service>
     <provider
       android:name="androidx.core.content.FileProvider"
       android:authorities="com.ntsinga.mobile.aiosfileprovider"

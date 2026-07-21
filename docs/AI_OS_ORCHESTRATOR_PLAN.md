@@ -848,8 +848,10 @@ rotation remain deployment hardening rather than local MVP work.
 Let a user teach an unfamiliar app once while AI-OS records semantic UI nodes, actions,
 conditions, and completion evidence rather than brittle coordinates. The first recorder
 contract is now available through `/learning/sessions`: start a teaching session, append
-semantic actions, and complete it. The Android AccessibilityService watcher and teaching UI
-are the next implementation slice.
+semantic actions, and complete it into a saved procedure draft. AI-OS now includes a consented
+AccessibilityService watcher, an Accessibility settings handoff, a live action counter, and
+mobile controls for starting/finishing teaching. Remaining work is review/approval before replay,
+completion detection, and robust UI-node selectors on more Android versions.
 
 ### Phase 6 — Adaptive Memory / Workflow Diff
 

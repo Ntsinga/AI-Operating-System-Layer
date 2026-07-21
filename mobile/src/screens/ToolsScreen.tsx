@@ -11,6 +11,8 @@ import { GoalGuardCard } from '../components/GoalGuardCard';
 import { LatestBriefCard } from '../components/LatestBriefCard';
 import { ExpenseDashboardCard } from '../components/ExpenseDashboardCard';
 import { ReceiptCaptureCard } from '../components/ReceiptCaptureCard';
+import { LearnedProceduresCard } from '../components/LearnedProceduresCard';
+import { LearningModeCard } from '../components/LearningModeCard';
 import {
   getContactsTool,
   getCurrentLocationTool,
@@ -61,6 +63,8 @@ export function ToolsScreen() {
       <LatestBriefCard />
       <ExpenseDashboardCard />
       <ReceiptCaptureCard />
+      <LearnedProceduresCard />
+      <LearningModeCard />
 
       <InputToolCard tool={searchYoutubeTool} fields={[{ key: 'query', label: 'Search YouTube for...' }]} />
       <InputToolCard tool={openWebSearchTool} fields={[{ key: 'query', label: 'Search the web for...' }]} />
