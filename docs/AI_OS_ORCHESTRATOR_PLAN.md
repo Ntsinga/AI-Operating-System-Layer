@@ -858,6 +858,14 @@ on more Android versions. The planner now has `list_learned_procedures` and
 `replay_learned_procedure`, allowing it to extract current-request values such as “Home” and
 propose a replay while preserving the normal confirmation boundary.
 
+### Core-phase verification
+
+Phases 1–4 have backend and contract coverage for tool-facing orchestration, workflow memory,
+completion outcomes, and learning-session persistence. Phase 5 has coverage for semantic session
+sanitization, draft creation, approval, and the replay contract. Android Accessibility behavior
+still requires a real device/emulator test because the local environment cannot run Gradle/device
+validation.
+
 ### Phase 6 — Adaptive Memory / Workflow Diff
 
 Detect UI changes, localize the changed step, relearn only that node, and version procedures

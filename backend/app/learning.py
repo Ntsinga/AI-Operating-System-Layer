@@ -5,12 +5,15 @@ development scaffold for the Android AccessibilityService watcher that will feed
 """
 
 import json
+import logging
 import sqlite3
+from contextlib import contextmanager
 import uuid
 from pathlib import Path
 from typing import Any
 
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
+logger = logging.getLogger("aios.learning")
 
 
 def _db() -> sqlite3.Connection:
@@ -28,18 +31,29 @@ def _db() -> sqlite3.Connection:
     return connection
 
 
+@contextmanager
+def _connection():
+    connection = _db()
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def start_session(intent: str, app_package: str | None = None) -> dict[str, Any]:
     session_id = str(uuid.uuid4())
-    with _db() as connection:
+    with _connection() as connection:
         connection.execute(
             "INSERT INTO learning_sessions(id, intent, app_package) VALUES (?, ?, ?)",
             (session_id, intent[:500], (app_package or "")[:200]),
         )
+    logger.info("learning_session_started session=%s app=%s", session_id, (app_package or "")[:80])
     return {"sessionId": session_id, "intent": intent[:500], "appPackage": app_package, "status": "recording", "actions": []}
 
 
 def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
-    with _db() as connection:
+    with _connection() as connection:
         row = connection.execute("SELECT actions_json, status FROM learning_sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             raise KeyError("Learning session was not found.")
@@ -50,11 +64,12 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
         safe = {key: action.get(key) for key in ("surface", "role", "text", "resourceId", "action", "value") if key in action}
         actions.append(safe)
         connection.execute("UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions)[:50000], session_id))
+    logger.info("learning_action_appended session=%s action_count=%d action=%s", session_id, len(actions), safe.get("action", ""))
     return {"sessionId": session_id, "actionCount": len(actions), "lastAction": safe, "status": "recording"}
 
 
 def complete_session(session_id: str) -> dict[str, Any]:
-    with _db() as connection:
+    with _connection() as connection:
         row = connection.execute("SELECT intent, app_package, actions_json, status FROM learning_sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             raise KeyError("Learning session was not found.")
@@ -67,4 +82,5 @@ def complete_session(session_id: str) -> dict[str, Any]:
     from app.procedural_memory import save_procedure
     history = [{"toolName": action.get("action", "ui_action"), "arguments": action} for action in actions]
     save_procedure(row[0], history, success=True, scope=row[1] or "local", outcome="taught", state="draft")
+    logger.info("learning_session_completed session=%s actions=%d procedure_saved=true", session_id, len(actions))
     return {"sessionId": session_id, "intent": row[0], "appPackage": row[1] or None, "actions": actions, "status": "completed", "procedureSaved": True}

@@ -621,6 +621,10 @@ resource ID, action, and value), explicitly excluding screenshots and arbitrary 
 scope, deduplication, versioning, and Fernet encryption when the production key is configured.
 Multi-user authentication and key rotation remain deployment hardening.
 
+Added structured API, learning, and procedural-memory logs. Added `backend/tests/test_phase45.py`;
+the three Phase 4/5 persistence and approval tests pass with `python -m unittest discover -s
+backend/tests -v`. Android and TypeScript checks remain environment-dependent.
+
 Phase 5 now has a user-visible teaching card, semantic AccessibilityService event capture,
 backend session ingestion, automatic procedure-draft creation, and draft approval/deletion. The
 watcher is consent-gated and records only event metadata; safe replay and cross-version selector

@@ -1,4 +1,5 @@
 import uuid
+import logging
 from typing import Any, Optional
 
 import httpx
@@ -23,6 +24,7 @@ from app.procedural_memory import approve_procedure, delete_procedure, list_proc
 from app.learning import append_action, complete_session, start_session  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
+logger = logging.getLogger("aios.api")
 
 # Local dev only: this backend is reached from the Android emulator (10.0.2.2) or a
 # device on the same LAN, never the public internet. Wide-open CORS is fine here.
@@ -298,6 +300,7 @@ def start_workflow(req: StartWorkflowRequest) -> WorkflowResponse:
         "proceduralMemory": search_procedures(req.command),
         "procedureScope": req.deviceId[:200] or "local",
     }
+    logger.info("workflow_started thread=%s scope=%s command_length=%d reused=%d", thread_id, req.deviceId[:80], len(req.command), len(initial_state["proceduralMemory"]))
     compiled_graph.invoke(initial_state, config=config)
     return _format_response(thread_id)
 
@@ -309,6 +312,7 @@ def resume_workflow(thread_id: str, req: ResumeWorkflowRequest) -> WorkflowRespo
     if not snapshot.next:
         raise HTTPException(404, f"No workflow awaiting resume for thread {thread_id}.")
 
+    logger.info("workflow_resumed thread=%s result_type=%s", thread_id, type(req.result).__name__)
     compiled_graph.invoke(Command(resume=req.result), config=config)
     return _format_response(thread_id)
 
@@ -325,6 +329,7 @@ def complete_workflow(thread_id: str, req: WorkflowFinalizeRequest = WorkflowFin
         intent = next((msg.get("content", "") for msg in values.get("messages", []) if msg.get("role") == "user"), "")
         outcome = req.outcome if req.outcome in {"succeeded", "failed", "cancelled", "rolled_back"} else "succeeded"
         save_procedure(intent, history, success=outcome == "succeeded", scope=values.get("procedureScope", "local"), outcome=outcome)
+        logger.info("workflow_completed thread=%s outcome=%s steps=%d", thread_id, outcome, len(history))
     return _format_response(thread_id)
 
 

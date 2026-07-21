@@ -2,13 +2,19 @@
 
 import json
 import hashlib
+import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from cryptography.fernet import Fernet
+try:
+    from cryptography.fernet import Fernet
+except ImportError:  # pragma: no cover - production requirements install cryptography
+    Fernet = None  # type: ignore[assignment,misc]
 
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
+logger = logging.getLogger("aios.procedural_memory")
 
 
 def _db() -> sqlite3.Connection:
@@ -41,8 +47,22 @@ def _db() -> sqlite3.Connection:
     return connection
 
 
-def _cipher() -> Fernet | None:
+@contextmanager
+def _connection():
+    connection = _db()
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _cipher() -> Any:
     key = os.getenv("GOOGLE_TOKEN_ENCRYPTION_KEY")
+    if key and Fernet is None:
+        raise RuntimeError("cryptography is required when procedural-memory encryption is enabled.")
+    if Fernet is None:
+        return None
     return Fernet(key.encode()) if key else None
 
 
@@ -64,7 +84,8 @@ def save_procedure(intent: str, history: list[dict[str, Any]], success: bool = T
     ]
     serialized = json.dumps(steps, default=str, sort_keys=True)[:50000]
     fingerprint = hashlib.sha256(f"{scope}:{intent.lower()}:{serialized}".encode()).hexdigest()
-    with _db() as connection:
+    logger.info("procedure_save_requested scope=%s outcome=%s state=%s steps=%d", scope[:80], outcome, state, len(steps))
+    with _connection() as connection:
         previous = connection.execute("SELECT id FROM procedures WHERE scope = ? AND fingerprint = ? LIMIT 1", (scope[:200], fingerprint)).fetchone()
         if previous:
             connection.execute(
@@ -85,20 +106,22 @@ def search_procedures(intent: str, limit: int = 3) -> list[dict[str, Any]]:
     if not terms:
         return []
     where = " OR ".join("LOWER(intent) LIKE ?" for _ in terms)
-    with _db() as connection:
+    with _connection() as connection:
         rows = connection.execute(
             f"SELECT id, intent, steps_json, success, outcome, scope, version, state, created_at FROM procedures WHERE {where} "
             "ORDER BY success DESC, created_at DESC LIMIT ?",
             tuple(f"%{term}%" for term in terms) + (limit,),
         ).fetchall()
-    return [
+    result = [
         {"id": row[0], "intent": row[1], "steps": json.loads(_decode(row[2])), "success": bool(row[3]), "outcome": row[4], "scope": row[5], "version": row[6], "state": row[7], "createdAt": row[8]}
         for row in rows
     ]
+    logger.info("procedure_search query_terms=%d matches=%d", len(terms), len(result))
+    return result
 
 
 def list_procedures(limit: int = 50) -> list[dict[str, Any]]:
-    with _db() as connection:
+    with _connection() as connection:
         rows = connection.execute(
             "SELECT id, intent, steps_json, success, outcome, scope, version, state, created_at FROM procedures "
             "ORDER BY created_at DESC LIMIT ?",
@@ -111,12 +134,16 @@ def list_procedures(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def delete_procedure(procedure_id: int) -> bool:
-    with _db() as connection:
+    with _connection() as connection:
         cursor = connection.execute("DELETE FROM procedures WHERE id = ?", (procedure_id,))
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        logger.info("procedure_delete id=%s deleted=%s", procedure_id, deleted)
+        return deleted
 
 
 def approve_procedure(procedure_id: int) -> bool:
-    with _db() as connection:
+    with _connection() as connection:
         cursor = connection.execute("UPDATE procedures SET state = 'approved' WHERE id = ?", (procedure_id,))
-        return cursor.rowcount > 0
+        approved = cursor.rowcount > 0
+        logger.info("procedure_approve id=%s approved=%s", procedure_id, approved)
+        return approved
