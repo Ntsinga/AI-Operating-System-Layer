@@ -660,3 +660,26 @@ install-time validation requirement rather than something this Windows workspace
   preferable for device demos; backend reachability must be configured independently using a
   LAN-reachable server address. React Native `@ReactMethod` methods should always declare an
   explicit `Unit` return when they resolve through a `Promise`.
+
+## 2026-07-22 — Hey Casper onboarding, recognition accuracy, and automatic execution
+
+- **Area**: Voice activation and workflow UX
+- **Change**: Added a first-run activation card that reports overlay, microphone, and calibration
+  readiness; asks only for missing Android permissions; resumes the overlay and voice foreground
+  services automatically after setup. Calibration records two private samples, one in a lower
+  speaking range and one in a higher range, and stores their verified transcripts in app-private
+  storage.
+- **Recognition**: Uses Android's on-device `SpeechRecognizer` when available, requests multiple
+  candidates/partial results and word confidence, and accepts common Casper/Kasper/Caspar/Asper
+  recognition variants. The overlay bubble now changes color/scale and its notification changes
+  when the phrase is heard and while the command is being captured.
+- **Boundary**: Android's built-in `SpeechRecognizer` cannot be personalized by injecting these
+  recordings. The samples are therefore a stored voice profile and a future integration point for
+  a real custom wake-word engine (for example an on-device ONNX/OpenWakeWord or Porcupine model),
+  not a claim that Android has been retrained.
+- **Workflow UX**: Removed the redundant `Confirm & run` tap from the normal planner proposal
+  loop. Tool proposals execute immediately; workflows still pause in `awaiting_reply` when the
+  planner needs user information.
+- **Validation**: `npm exec tsc -- --noEmit` passed. A self-contained debug APK was produced at
+  `mobile/android/app/build/outputs/apk/debug/app-debug.apk`. ADB device validation could not be
+  repeated in this session because both previously connected targets were offline/disconnected.

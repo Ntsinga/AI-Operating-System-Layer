@@ -17,6 +17,9 @@ import java.util.concurrent.atomic.AtomicInteger
 object PermissionHelper {
   private val requestCodeSequence = AtomicInteger(1000)
 
+  fun hasPermission(reactContext: ReactApplicationContext, permission: String): Boolean =
+    ContextCompat.checkSelfPermission(reactContext, permission) == PackageManager.PERMISSION_GRANTED
+
   fun requestPermission(
     reactContext: ReactApplicationContext,
     permission: String,

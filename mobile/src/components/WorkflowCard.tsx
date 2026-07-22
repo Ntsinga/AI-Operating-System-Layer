@@ -63,8 +63,12 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
     setAssistantMessage(null);
 
     if (response.status === 'awaiting_confirmation') {
+      // Tool proposals are executed immediately so a voice command does not stop at a
+      // redundant "Confirm & run" tap. Risk-sensitive tools should still ask a focused question
+      // through the workflow's awaiting_reply state before they reach this point.
       setProposal(response.proposedTool);
-      setPhase('awaiting_confirmation');
+      setPhase('running');
+      void executeProposal(response.proposedTool, response.threadId);
     } else if (response.status === 'awaiting_reply') {
       setAssistantMessage(response.message);
       setPhase('awaiting_reply');
@@ -102,14 +106,14 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
     }
   }, [initialCommand]);
 
-  async function handleConfirm() {
-    if (!proposal || !threadId) {
+  async function executeProposal(proposalToRun: ProposedToolCall, workflowThreadId: string) {
+    if (!proposalToRun || !workflowThreadId) {
       return;
     }
 
-    const tool = tools.find((candidate) => candidate.name === proposal.toolName);
+    const tool = tools.find((candidate) => candidate.name === proposalToRun.toolName);
     if (!tool) {
-      setError(`Model chose an unknown tool: ${proposal.toolName}`);
+      setError(`Model chose an unknown tool: ${proposalToRun.toolName}`);
       return;
     }
 
@@ -118,7 +122,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
 
     let toolResult: unknown;
     try {
-      toolResult = await tool.execute(proposal.arguments as never);
+      toolResult = await tool.execute(proposalToRun.arguments as never);
     } catch (executeError) {
       // Feed the failure back into the workflow (instead of aborting) so the model
       // can see what went wrong and try a different tool/argument on the next step.
@@ -128,7 +132,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
     }
 
     try {
-      const response = await resumeWorkflow(threadId, toolResult);
+      const response = await resumeWorkflow(workflowThreadId, toolResult);
       applyResponse(response);
     } catch (resumeError) {
       setError(resumeError instanceof Error ? resumeError.message : 'Failed to resume workflow.');
@@ -191,8 +195,9 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
         <Text style={styles.name}>AI assistant</Text>
         <Text style={styles.description}>
           Type or speak a command in plain English. Runs a chain of tool calls and
-          back-and-forth replies until you stop it or 12 steps pass - nothing runs until you
-          confirm. Requires the backend (backend/: uvicorn app.main:app) running and reachable.
+          back-and-forth replies until you stop it or 12 steps pass. Voice commands execute
+          tool proposals automatically; the assistant pauses only when it needs an answer.
+          Requires the backend (backend/: uvicorn app.main:app) running and reachable.
         </Text>
       </View>
 
@@ -245,12 +250,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
             {JSON.stringify(proposal, null, 2)}
           </Text>
           <View style={styles.proposalActions}>
-            <GradientButton
-              label={phase === 'running' ? 'Running...' : 'Confirm & run'}
-              disabled={isBusy}
-              onPress={handleConfirm}
-              style={styles.flexButton}
-            />
+            <Text style={styles.autoRunNotice}>{isBusy ? 'Executing automatically...' : 'Executed'}</Text>
             <Pressable
               accessibilityRole="button"
               disabled={isBusy}
@@ -440,6 +440,14 @@ const styles = StyleSheet.create({
   proposalActions: {
     flexDirection: 'row',
     gap: 10,
+  },
+  autoRunNotice: {
+    alignItems: 'center',
+    color: colors.positive,
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '800',
+    paddingVertical: 15,
   },
   cancelButton: {
     alignItems: 'center',

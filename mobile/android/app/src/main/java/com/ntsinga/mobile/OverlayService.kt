@@ -12,6 +12,7 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -24,6 +25,8 @@ private const val CHANNEL_ID = "aios_overlay_channel"
 private const val NOTIFICATION_ID = 4301
 private const val ACTION_STOP = "com.ntsinga.mobile.OVERLAY_STOP"
 private const val DRAG_THRESHOLD_PX = 12
+private const val ACTION_ATTENTION = "com.ntsinga.mobile.OVERLAY_ATTENTION"
+private const val EXTRA_ATTENTION = "attention"
 
 // Hosts a small draggable floating bubble (TYPE_APPLICATION_OVERLAY) reachable from any app,
 // per docs/AI_OS_ORCHESTRATOR_PLAN.md Phase 3.5 Step 1. Must run as a foreground service (with
@@ -34,6 +37,8 @@ private const val DRAG_THRESHOLD_PX = 12
 class OverlayService : Service() {
   private var windowManager: WindowManager? = null
   private var bubbleView: View? = null
+  private var bubbleRing: GradientDrawable? = null
+  private var attentionState: String = "idle"
 
   companion object {
     @Volatile private var latestBrief: String? = null
@@ -42,6 +47,14 @@ class OverlayService : Service() {
     @Volatile
     var isRunning: Boolean = false
       private set
+
+    fun hasPermission(context: android.content.Context): Boolean =
+      Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
+
+    fun setAttentionState(context: android.content.Context, state: String) {
+      activeService?.applyAttentionState(state)
+        ?: context.sendBroadcast(Intent(ACTION_ATTENTION).putExtra(EXTRA_ATTENTION, state))
+    }
 
     fun start(context: android.content.Context) {
       val intent = Intent(context, OverlayService::class.java)
@@ -70,11 +83,29 @@ class OverlayService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
       stopSelf()
+    } else if (intent?.action == ACTION_ATTENTION) {
+      applyAttentionState(intent.getStringExtra(EXTRA_ATTENTION) ?: "idle")
     }
     return START_STICKY
   }
 
-  private fun startForegroundWithNotification() {
+  private fun applyAttentionState(state: String) {
+    attentionState = when (state) {
+      "attentive", "listening" -> state
+      else -> "idle"
+    }
+    val (color, scale, text) = when (attentionState) {
+      "attentive" -> Triple(Color.parseColor("#F6B84F"), 1.16f, "I heard you - listening for a command")
+      "listening" -> Triple(Color.parseColor("#5FD1A0"), 1.12f, "Listening to your command")
+      else -> Triple(null, 1.0f, latestBrief ?: "Tap the bubble to open the assistant.")
+    }
+    color?.let { bubbleRing?.setColor(it) } ?: bubbleRing?.setColors(intArrayOf(Color.parseColor("#4F7CF6"), Color.parseColor("#8B5CF6")))
+    bubbleView?.animate()?.scaleX(scale)?.scaleY(scale)?.setDuration(180)?.start()
+    if (attentionState == "idle") bubbleView?.alpha = 1f else bubbleView?.alpha = 0.98f
+    startForegroundWithNotification(text)
+  }
+
+  private fun startForegroundWithNotification(text: String? = null) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val channel = NotificationChannel(CHANNEL_ID, "AI-OS overlay", NotificationManager.IMPORTANCE_LOW)
       getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -94,7 +125,7 @@ class OverlayService : Service() {
 
     val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("AI-OS is active")
-      .setContentText(latestBrief ?: "Tap the bubble to open the assistant.")
+      .setContentText(text ?: latestBrief ?: "Tap the bubble to open the assistant.")
       .setSmallIcon(R.mipmap.ic_launcher)
       .setContentIntent(openPendingIntent)
       .addAction(0, "Stop", stopPendingIntent)
@@ -189,9 +220,11 @@ class OverlayService : Service() {
       intArrayOf(Color.parseColor("#4F7CF6"), Color.parseColor("#8B5CF6"))
     )
 
+    val ringDrawable = brandGradient().apply { shape = GradientDrawable.OVAL }
+    bubbleRing = ringDrawable
     val ring = FrameLayout(this).apply {
       layoutParams = FrameLayout.LayoutParams(outerSizePx, outerSizePx)
-      background = brandGradient().apply { shape = GradientDrawable.OVAL }
+      background = ringDrawable
     }
 
     val inner = FrameLayout(this).apply {

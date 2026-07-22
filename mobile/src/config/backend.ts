@@ -1,4 +1,5 @@
-// Use the development machine's LAN address so both the emulator and a USB/Wi-Fi
-// physical device can reach the same FastAPI process. Keep the backend bound to
-// 0.0.0.0:8000 and ensure the phone is on the same network.
-export const BACKEND_BASE_URL = 'http://192.168.1.74:8000';
+// The development runner forwards port 8000 over ADB for both the emulator and
+// the USB-connected phone. This avoids relying on the phone being on the same
+// Wi-Fi network as the host. For a standalone Wi-Fi build, replace this with a
+// reachable HTTPS backend URL.
+export const BACKEND_BASE_URL = 'http://127.0.0.1:8000';
