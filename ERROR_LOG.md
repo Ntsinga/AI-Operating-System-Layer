@@ -683,3 +683,27 @@ install-time validation requirement rather than something this Windows workspace
 - **Validation**: `npm exec tsc -- --noEmit` passed. A self-contained debug APK was produced at
   `mobile/android/app/build/outputs/apk/debug/app-debug.apk`. ADB device validation could not be
   repeated in this session because both previously connected targets were offline/disconnected.
+
+## 2026-07-22 - Zero-cost Sherpa-ONNX wake-word engine
+
+- **Area**: Voice activation / on-device keyword spotting
+- **Change**: Replaced continuous wake-phrase transcription with Sherpa-ONNX's open-vocabulary
+  English keyword spotter. The app bundles the Apache-2.0 Android AAR, a small int8 Zipformer
+  model, and a generated `HEY CASPER` keyword file. Sherpa owns the microphone while waiting for
+  the wake phrase; after detection it releases the mic to Android SpeechRecognizer for the command,
+  then re-arms the spotter. If the native runtime/model cannot initialize, the previous transcript
+  matcher remains the fallback.
+- **Why**: A dedicated keyword spotter only decodes the configured phrase, so it avoids repeatedly
+  interpreting arbitrary speech as a wake command and avoids sending wake detection to a cloud
+  recognizer. The user's low/high samples remain private calibration history; this open-vocabulary
+  model does not claim to retrain from them.
+- **Packaging**: Debug APK is restricted to `arm64-v8a` and `x86_64` (the connected phone and
+  emulator). The resulting APK is approximately 161 MB because it contains the native inference
+  runtime and model assets.
+- **Validation**: `:app:assembleDebug` passed; APK installed on both `R5CY105S20T` and
+  `emulator-5554`. Emulator logcat confirms `Sherpa-ONNX KWS initialized for Hey Casper` and
+  loads `libsherpa-onnx-jni.so` without a crash. Real speech recall, false accepts/hour, and battery
+  usage still require a controlled phone test with positive and negative recordings.
+- **Startup hardening**: Sherpa model construction now runs on a single background executor, so
+  React renders the AI-OS screen while the model warms up instead of appearing blank or dropping
+  frames during first activation.

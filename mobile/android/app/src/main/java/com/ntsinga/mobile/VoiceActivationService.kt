@@ -6,6 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -15,21 +18,41 @@ import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.KeywordSpotter
+import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineStream
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.Executors
+import kotlin.concurrent.thread
+import kotlin.math.max
 
 private const val VOICE_CHANNEL_ID = "aios_voice_activation_channel"
 private const val VOICE_NOTIFICATION_ID = 4302
 private const val ACTION_STOP = "com.ntsinga.mobile.VOICE_ACTIVATION_STOP"
 private const val WAKE_PHRASE = "hey casper"
+private const val KWS_SAMPLE_RATE = 16000
+private const val KWS_MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+private const val TAG = "AiosVoiceActivation"
 
 /** Opt-in, foreground microphone listener for the "Hey Casper" activation phrase. */
 class VoiceActivationService : Service() {
   private var recognizer: SpeechRecognizer? = null
   private var listening = false
   private var armedForCommand = false
+  private var keywordSpotter: KeywordSpotter? = null
+  private var keywordStream: OnlineStream? = null
+  private var audioRecord: AudioRecord? = null
+  private var keywordThread: Thread? = null
+  @Volatile private var keywordListening = false
+  private var keywordMode = false
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val modelExecutor = Executors.newSingleThreadExecutor()
 
   companion object {
     @Volatile
@@ -51,19 +74,32 @@ class VoiceActivationService : Service() {
 
   override fun onCreate() {
     super.onCreate()
-    if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-      stopSelf()
-      return
-    }
-
     startForegroundWithNotification("Listening for \"Hey Casper\"")
-    recognizer = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
-      SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
-    } else {
-      SpeechRecognizer.createSpeechRecognizer(this)
-    }).also { it.setRecognitionListener(listener) }
     isRunning = true
-    listen()
+
+    // Prefer a dedicated on-device KWS loop. It only decodes the configured
+    // phrase and therefore avoids the false accepts and latency of continuous
+    // full-speech transcription. SpeechRecognizer remains a fallback for
+    // devices where the bundled native runtime/model cannot initialize.
+    // Model loading is deliberately off the app/service main thread. The
+    // runtime can take a couple of seconds on first load and must not blank or
+    // stall the React surface while the activation card is rendering.
+    modelExecutor.execute {
+      val initialized = initializeKeywordSpotter()
+      mainHandler.post {
+        if (!isRunning) return@post
+        keywordMode = initialized
+        if (keywordMode) {
+          startKeywordSpotter()
+        } else if (SpeechRecognizer.isRecognitionAvailable(this)) {
+          initializeSpeechRecognizer()
+          listen()
+        } else {
+          Log.e(TAG, "Neither Sherpa KWS nor Android SpeechRecognizer is available")
+          stopSelf()
+        }
+      }
+    }
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -80,7 +116,13 @@ class VoiceActivationService : Service() {
 
     override fun onError(error: Int) {
       listening = false
-      if (isRunning) listen()
+      if (!isRunning) return
+      if (keywordMode) {
+        armedForCommand = false
+        startKeywordSpotter()
+      } else {
+        listen()
+      }
     }
 
     override fun onResults(results: Bundle?) {
@@ -89,7 +131,9 @@ class VoiceActivationService : Service() {
       val confidenceScores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
       val matchedTranscript = transcriptCandidates(candidates, confidenceScores)
       handleTranscript(matchedTranscript ?: candidates.firstOrNull()?.trim().orEmpty(), matchedTranscript != null)
-      if (isRunning && !listening) listen()
+      if (isRunning && !listening) {
+        if (keywordMode && !armedForCommand) startKeywordSpotter() else if (!keywordMode) listen()
+      }
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
@@ -103,7 +147,13 @@ class VoiceActivationService : Service() {
   }
 
   private fun listen() {
+    if (!isRunning || listening || keywordMode) return
+    startCommandListening()
+  }
+
+  private fun startCommandListening() {
     if (!isRunning || listening) return
+    initializeSpeechRecognizer()
     val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
       putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
       putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
@@ -118,6 +168,139 @@ class VoiceActivationService : Service() {
       recognizer?.startListening(intent)
       listening = true
     }.onFailure { listening = false }
+  }
+
+  private fun initializeSpeechRecognizer() {
+    if (recognizer != null) return
+    if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+    recognizer = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+      SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+    } else {
+      SpeechRecognizer.createSpeechRecognizer(this)
+    }).also { it.setRecognitionListener(listener) }
+  }
+
+  private fun initializeKeywordSpotter(): Boolean = runCatching {
+    val modelDir = KWS_MODEL_DIR
+    val config = KeywordSpotterConfig(
+      featConfig = FeatureConfig(sampleRate = KWS_SAMPLE_RATE, featureDim = 80),
+      modelConfig = OnlineModelConfig(
+        transducer = OnlineTransducerModelConfig(
+          encoder = "$modelDir/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          decoder = "$modelDir/decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+          joiner = "$modelDir/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        ),
+        tokens = "$modelDir/tokens.txt",
+        numThreads = 1,
+        provider = "cpu",
+        modelType = "zipformer2",
+      ),
+      keywordsFile = "$modelDir/keywords.txt",
+      // A moderate threshold is a safer starting point. It can be tuned from
+      // false-accept/false-reject telemetry without retraining the model.
+      keywordsScore = 1.5f,
+      keywordsThreshold = 0.25f,
+      numTrailingBlanks = 1,
+    )
+    keywordSpotter = KeywordSpotter(assetManager = assets, config = config)
+    Log.i(TAG, "Sherpa-ONNX KWS initialized for Hey Casper")
+    true
+  }.onFailure {
+    Log.e(TAG, "Sherpa-ONNX KWS unavailable; falling back to SpeechRecognizer", it)
+  }.getOrDefault(false)
+
+  private fun startKeywordSpotter() {
+    if (!isRunning || !keywordMode || keywordListening) return
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      Log.w(TAG, "Microphone permission missing; cannot start KWS")
+      return
+    }
+    val spotter = keywordSpotter ?: run {
+      keywordMode = false
+      initializeSpeechRecognizer()
+      listen()
+      return
+    }
+    val minBuffer = AudioRecord.getMinBufferSize(
+      KWS_SAMPLE_RATE,
+      AudioFormat.CHANNEL_IN_MONO,
+      AudioFormat.ENCODING_PCM_16BIT,
+    )
+    if (minBuffer <= 0) {
+      keywordMode = false
+      initializeSpeechRecognizer()
+      listen()
+      return
+    }
+    val record = AudioRecord(
+      MediaRecorder.AudioSource.VOICE_RECOGNITION,
+      KWS_SAMPLE_RATE,
+      AudioFormat.CHANNEL_IN_MONO,
+      AudioFormat.ENCODING_PCM_16BIT,
+      max(minBuffer * 2, KWS_SAMPLE_RATE / 5),
+    )
+    val stream = spotter.createStream()
+    if (stream.ptr == 0L || record.state != AudioRecord.STATE_INITIALIZED) {
+      stream.release()
+      record.release()
+      keywordMode = false
+      initializeSpeechRecognizer()
+      listen()
+      return
+    }
+    audioRecord = record
+    keywordStream = stream
+    keywordListening = true
+    record.startRecording()
+    Log.i(TAG, "Sherpa KWS microphone started (sampleRate=$KWS_SAMPLE_RATE, buffer=$minBuffer)")
+    keywordThread = thread(start = true, name = "aios-sherpa-kws") {
+      val buffer = ShortArray(KWS_SAMPLE_RATE / 10)
+      while (keywordListening) {
+        val count = runCatching { record.read(buffer, 0, buffer.size) }.getOrDefault(0)
+        if (count <= 0) continue
+        val samples = FloatArray(count) { buffer[it] / 32768.0f }
+        stream.acceptWaveform(samples, KWS_SAMPLE_RATE)
+        while (keywordListening && spotter.isReady(stream)) {
+          spotter.decode(stream)
+          val result = spotter.getResult(stream)
+          if (result.keyword.isNotBlank()) {
+            spotter.reset(stream)
+            mainHandler.post { handleKeywordDetected(result.keyword) }
+            break
+          }
+        }
+      }
+      stream.release()
+      runCatching { record.stop() }
+      record.release()
+    }
+    updateNotification("Listening for \"Hey Casper\" (on-device)")
+  }
+
+  private fun stopKeywordSpotter() {
+    if (keywordListening) Log.i(TAG, "Stopping Sherpa KWS microphone for command capture")
+    keywordListening = false
+    runCatching { audioRecord?.stop() }
+    val thread = keywordThread
+    if (thread != null && thread !== Thread.currentThread()) runCatching { thread.join(350) }
+    keywordThread = null
+    keywordStream = null
+    audioRecord = null
+  }
+
+  private fun handleKeywordDetected(keyword: String) {
+    if (!isRunning || armedForCommand) return
+    Log.i(TAG, "Wake word detected: $keyword")
+    stopKeywordSpotter()
+    armedForCommand = true
+    OverlayService.setAttentionState(this, "attentive")
+    updateNotification("Wake phrase heard - listening for your command")
+    mainHandler.postDelayed({
+      if (isRunning && armedForCommand) {
+        OverlayService.setAttentionState(this, "listening")
+        startCommandListening()
+      }
+    }, 150L)
   }
 
   private fun handleTranscript(rawTranscript: String, wakeCandidate: Boolean = false) {
@@ -212,6 +395,10 @@ class VoiceActivationService : Service() {
   override fun onDestroy() {
     isRunning = false
     mainHandler.removeCallbacksAndMessages(null)
+    stopKeywordSpotter()
+    keywordSpotter?.release()
+    keywordSpotter = null
+    modelExecutor.shutdownNow()
     recognizer?.destroy()
     recognizer = null
     OverlayService.setAttentionState(this, "idle")
