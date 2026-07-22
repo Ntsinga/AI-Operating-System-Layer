@@ -36,9 +36,9 @@ export function ActivationSetupCard() {
 
       // Once the user has approved Android's permissions and calibrated, the assistant resumes
       // automatically whenever the app comes back to the foreground.
-      if (next.hasOverlayPermission && next.calibrationComplete) {
+      if (next.hasOverlayPermission) {
         if (!next.overlayActive) await getOverlayModule().startOverlay();
-        if (next.hasMicPermission && !next.voiceActive) await getVoiceActivationModule().startVoiceActivation();
+        if (next.calibrationComplete && next.hasMicPermission && !next.voiceActive) await getVoiceActivationModule().startVoiceActivation();
         setStatus(await getVoiceActivationModule().getSetupStatus());
       }
     } catch (error) {
@@ -59,6 +59,10 @@ export function ActivationSetupCard() {
     setMessage(null);
     try {
       const current = status ?? (await getVoiceActivationModule().getSetupStatus());
+      if (current.hasOverlayPermission && !current.calibrationComplete) {
+        await calibrate();
+        return;
+      }
       if (!current.hasOverlayPermission) {
         await getOverlayModule().requestOverlayPermission();
         setMessage('Turn on “Display over other apps”, then return here. AI-OS will continue automatically.');
@@ -119,29 +123,9 @@ export function ActivationSetupCard() {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>Hey Casper setup</Text>
-      <Text style={styles.description}>
-        One setup enables the bubble and hands-free listening. Android will only interrupt you for
-        permissions it cannot grant automatically.
-      </Text>
+      <Text style={styles.description}>Hands-free control with the Hey Casper bubble.</Text>
 
-      <View style={styles.statusRow}>
-        <Text style={styles.statusLabel}>Bubble</Text>
-        <Text style={status?.hasOverlayPermission ? styles.good : styles.pending}>
-          {status?.hasOverlayPermission ? 'Permission ready' : 'Permission needed'}
-        </Text>
-      </View>
-      <View style={styles.statusRow}>
-        <Text style={styles.statusLabel}>Microphone</Text>
-        <Text style={status?.hasMicPermission ? styles.good : styles.pending}>
-          {status?.hasMicPermission ? 'Permission ready' : 'Permission needed'}
-        </Text>
-      </View>
-      <View style={styles.statusRow}>
-        <Text style={styles.statusLabel}>Wake phrase</Text>
-        <Text style={calibrated ? styles.good : styles.pending}>{calibrated ? 'Calibrated' : 'One recording needed'}</Text>
-      </View>
-
-      {!calibrated ? (
+      {!calibrated && calibrationState !== 'idle' ? (
         <>
           <Text style={styles.instruction}>
             {profile === 'low'
@@ -157,7 +141,7 @@ export function ActivationSetupCard() {
       ) : null}
 
       {!ready ? (
-        <GradientButton label={busy ? 'Enabling...' : 'Enable bubble + voice'} disabled={busy} onPress={() => void enableActivation()} />
+        <GradientButton label={busy || calibrationState === 'transcribing' ? 'Setting up...' : calibrationState === 'recording' ? 'Finish voice setup' : 'Set up voice activation'} disabled={busy || calibrationState === 'transcribing'} onPress={() => void (calibrationState === 'recording' ? calibrate() : enableActivation())} />
       ) : (
         <Text style={styles.ready}>● Hey Casper is active. The bubble will pulse when it hears you.</Text>
       )}

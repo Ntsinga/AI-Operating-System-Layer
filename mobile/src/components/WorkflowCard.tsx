@@ -193,12 +193,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
     <View style={styles.card}>
       <View style={styles.info}>
         <Text style={styles.name}>AI assistant</Text>
-        <Text style={styles.description}>
-          Type or speak a command in plain English. Runs a chain of tool calls and
-          back-and-forth replies until you stop it or 12 steps pass. Voice commands execute
-          tool proposals automatically; the assistant pauses only when it needs an answer.
-          Requires the backend (backend/: uvicorn app.main:app) running and reachable.
-        </Text>
+        <Text style={styles.description}>Type or speak a command.</Text>
       </View>
 
       <View style={styles.inputRow}>
