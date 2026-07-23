@@ -11,21 +11,8 @@ import { GradientButton } from './GradientButton';
 type CalibrationState = 'idle' | 'recording' | 'transcribing';
 type VoiceProfile = 'low' | 'high';
 
-// Android/Whisper commonly renders accented speech as "hej kaspa", "hey caspar",
-// or drops the final consonant. Calibration should validate the user's utterance,
-// not fail because transcription spelling differs from the configured wake phrase.
-const WAKE_WORD_VARIANTS = ['hey', 'hej', 'hei', 'he'];
-const CASPER_WORD_VARIANTS = ['casper', 'kasper', 'caspar', 'kaspar', 'kaspa', 'caspa', 'asper'];
-
 function normalize(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-function containsWakePhrase(text: string): boolean {
-  const words = normalize(text).replace(/[^a-zà-ÿ\s]/gi, ' ').split(' ').filter(Boolean);
-  const hasWakeWord = words.some((word) => WAKE_WORD_VARIANTS.includes(word) || word.startsWith('hey'));
-  const hasCasperWord = words.some((word) => CASPER_WORD_VARIANTS.includes(word) || /^(c|k)as+p(er|a)?$/i.test(word));
-  return hasWakeWord && hasCasperWord;
 }
 
 export function ActivationSetupCard() {
@@ -97,15 +84,14 @@ export function ActivationSetupCard() {
     try {
       const recording = await getAudioRecorderModule().stopRecording();
       const transcript = await transcribeAudio(recording.uri);
-      if (!containsWakePhrase(transcript)) {
-        throw new Error(`I heard “${transcript || 'nothing'}”. Please record the words “Hey Casper”.`);
-      }
+      // Keep the acoustic sample even when cloud transcription is empty or phonetic.
+      // The sample—not the transcript—is what the future personalized verifier will use.
       await getVoiceActivationModule().saveWakePhraseSample(recording.path, transcript, profile);
       if (profile === 'low') {
         setProfile('high');
-        setMessage('Low-tone sample saved. Now say “Hey Casper” in your natural higher tone.');
+        setMessage(`Low-tone voice sample saved${transcript ? ` (“${transcript}”)` : ''}. Now record your natural higher tone.`);
       } else {
-        setMessage('Both voice ranges saved. The bubble will react when it hears Hey Casper.');
+        setMessage('Both voice samples saved. AI-OS will use them for personalized wake-word matching.');
       }
       await refresh();
     } catch (error) {
