@@ -7,6 +7,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from app.storage import connection, execute, postgres_enabled
 from typing import Any
 try:
     from cryptography.fernet import Fernet
@@ -17,11 +18,12 @@ DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.procedural_memory")
 
 
-def _db() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH)
+def _db():
+    connection = sqlite3.connect(DB_PATH) if not postgres_enabled() else __import__('psycopg').connect(os.environ['DATABASE_URL'])
+    id_definition = "INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY" if postgres_enabled() else "INTEGER PRIMARY KEY"
     connection.execute(
-        """CREATE TABLE IF NOT EXISTS procedures (
-            id INTEGER PRIMARY KEY,
+        f"""CREATE TABLE IF NOT EXISTS procedures (
+            id {id_definition},
             intent TEXT NOT NULL,
             steps_json TEXT NOT NULL,
             success INTEGER NOT NULL DEFAULT 1,
@@ -33,17 +35,17 @@ def _db() -> sqlite3.Connection:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
     )
-    for statement in (
+    if not postgres_enabled():
+        statements = (
         "ALTER TABLE procedures ADD COLUMN outcome TEXT NOT NULL DEFAULT 'succeeded'",
         "ALTER TABLE procedures ADD COLUMN scope TEXT NOT NULL DEFAULT 'local'",
         "ALTER TABLE procedures ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE procedures ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE procedures ADD COLUMN state TEXT NOT NULL DEFAULT 'approved'",
-    ):
-        try:
-            connection.execute(statement)
-        except sqlite3.OperationalError:
-            pass
+        )
+        for statement in statements:
+            try: connection.execute(statement)
+            except sqlite3.OperationalError: pass
     return connection
 
 
@@ -86,16 +88,16 @@ def save_procedure(intent: str, history: list[dict[str, Any]], success: bool = T
     fingerprint = hashlib.sha256(f"{scope}:{intent.lower()}:{serialized}".encode()).hexdigest()
     logger.info("procedure_save_requested scope=%s outcome=%s state=%s steps=%d", scope[:80], outcome, state, len(steps))
     with _connection() as connection:
-        previous = connection.execute("SELECT id FROM procedures WHERE scope = ? AND fingerprint = ? LIMIT 1", (scope[:200], fingerprint)).fetchone()
+        previous = execute(connection, "SELECT id FROM procedures WHERE scope = ? AND fingerprint = ? LIMIT 1", (scope[:200], fingerprint)).fetchone()
         if previous:
-            connection.execute(
+            execute(connection,
                 "UPDATE procedures SET success = ?, outcome = ?, state = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (int(success), outcome[:40], state[:20], previous[0]),
             )
             return
-        latest = connection.execute("SELECT COALESCE(MAX(version), 0) FROM procedures WHERE scope = ? AND LOWER(intent) = LOWER(?)", (scope[:200], intent[:500])).fetchone()
+        latest = execute(connection, "SELECT COALESCE(MAX(version), 0) FROM procedures WHERE scope = ? AND LOWER(intent) = LOWER(?)", (scope[:200], intent[:500])).fetchone()
         version = latest[0] + 1
-        connection.execute(
+        execute(connection,
             "INSERT INTO procedures(intent, steps_json, success, outcome, scope, fingerprint, version, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (intent[:500], _encode(serialized), int(success), outcome[:40], scope[:200], fingerprint, version, state[:20]),
         )
@@ -107,7 +109,7 @@ def search_procedures(intent: str, limit: int = 3) -> list[dict[str, Any]]:
         return []
     where = " OR ".join("LOWER(intent) LIKE ?" for _ in terms)
     with _connection() as connection:
-        rows = connection.execute(
+        rows = execute(connection,
             f"SELECT id, intent, steps_json, success, outcome, scope, version, state, created_at FROM procedures WHERE {where} "
             "ORDER BY success DESC, created_at DESC LIMIT ?",
             tuple(f"%{term}%" for term in terms) + (limit,),
@@ -122,7 +124,7 @@ def search_procedures(intent: str, limit: int = 3) -> list[dict[str, Any]]:
 
 def list_procedures(limit: int = 50) -> list[dict[str, Any]]:
     with _connection() as connection:
-        rows = connection.execute(
+        rows = execute(connection,
             "SELECT id, intent, steps_json, success, outcome, scope, version, state, created_at FROM procedures "
             "ORDER BY created_at DESC LIMIT ?",
             (limit,),
@@ -135,7 +137,7 @@ def list_procedures(limit: int = 50) -> list[dict[str, Any]]:
 
 def delete_procedure(procedure_id: int) -> bool:
     with _connection() as connection:
-        cursor = connection.execute("DELETE FROM procedures WHERE id = ?", (procedure_id,))
+        cursor = execute(connection, "DELETE FROM procedures WHERE id = ?", (procedure_id,))
         deleted = cursor.rowcount > 0
         logger.info("procedure_delete id=%s deleted=%s", procedure_id, deleted)
         return deleted
@@ -143,7 +145,7 @@ def delete_procedure(procedure_id: int) -> bool:
 
 def approve_procedure(procedure_id: int) -> bool:
     with _connection() as connection:
-        cursor = connection.execute("UPDATE procedures SET state = 'approved' WHERE id = ?", (procedure_id,))
+        cursor = execute(connection, "UPDATE procedures SET state = 'approved' WHERE id = ?", (procedure_id,))
         approved = cursor.rowcount > 0
         logger.info("procedure_approve id=%s approved=%s", procedure_id, approved)
         return approved
