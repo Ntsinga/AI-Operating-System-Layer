@@ -11,15 +11,21 @@ import { GradientButton } from './GradientButton';
 type CalibrationState = 'idle' | 'recording' | 'transcribing';
 type VoiceProfile = 'low' | 'high';
 
-const WAKE_PHRASE_VARIANTS = ['hey casper', 'hey kasper', 'hey caspar', 'hey asper'];
+// Android/Whisper commonly renders accented speech as "hej kaspa", "hey caspar",
+// or drops the final consonant. Calibration should validate the user's utterance,
+// not fail because transcription spelling differs from the configured wake phrase.
+const WAKE_WORD_VARIANTS = ['hey', 'hej', 'hei', 'he'];
+const CASPER_WORD_VARIANTS = ['casper', 'kasper', 'caspar', 'kaspar', 'kaspa', 'caspa', 'asper'];
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 function containsWakePhrase(text: string): boolean {
-  const normalized = normalize(text);
-  return WAKE_PHRASE_VARIANTS.some((phrase) => normalized.includes(phrase));
+  const words = normalize(text).replace(/[^a-zà-ÿ\s]/gi, ' ').split(' ').filter(Boolean);
+  const hasWakeWord = words.some((word) => WAKE_WORD_VARIANTS.includes(word) || word.startsWith('hey'));
+  const hasCasperWord = words.some((word) => CASPER_WORD_VARIANTS.includes(word) || /^(c|k)as+p(er|a)?$/i.test(word));
+  return hasWakeWord && hasCasperWord;
 }
 
 export function ActivationSetupCard() {
