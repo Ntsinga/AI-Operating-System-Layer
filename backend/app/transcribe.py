@@ -20,5 +20,7 @@ def transcribe_audio(file_bytes: bytes, filename: str) -> str:
     response = client.audio.transcriptions.create(
         model=TRANSCRIBE_MODEL,
         file=(filename, file_bytes),
+        language="en",
+        prompt="The speaker is saying a short English wake phrase: Hey Casper.",
     )
     return response.text

@@ -44,7 +44,7 @@ export function ActivationSetupCard() {
       // automatically whenever the app comes back to the foreground.
       if (next.hasOverlayPermission) {
         if (!next.overlayActive) await getOverlayModule().startOverlay();
-        if (next.calibrationComplete && next.hasMicPermission && !next.voiceActive) await getVoiceActivationModule().startVoiceActivation();
+        if (next.hasMicPermission && !next.voiceActive) await getVoiceActivationModule().startVoiceActivation();
         setStatus(await getVoiceActivationModule().getSetupStatus());
       }
     } catch (error) {
@@ -65,17 +65,9 @@ export function ActivationSetupCard() {
     setMessage(null);
     try {
       const current = status ?? (await getVoiceActivationModule().getSetupStatus());
-      if (current.hasOverlayPermission && !current.calibrationComplete) {
-        await calibrate();
-        return;
-      }
       if (!current.hasOverlayPermission) {
         await getOverlayModule().requestOverlayPermission();
         setMessage('Turn on “Display over other apps”, then return here. AI-OS will continue automatically.');
-        return;
-      }
-      if (!current.calibrationComplete) {
-        setMessage('Record “Hey Casper” once below so AI-OS can verify your preferred wake phrase.');
         return;
       }
       await getOverlayModule().startOverlay();
@@ -123,7 +115,7 @@ export function ActivationSetupCard() {
     }
   }
 
-  const ready = Boolean(status?.hasOverlayPermission && status?.hasMicPermission && status?.calibrationComplete);
+  const ready = Boolean(status?.hasOverlayPermission && status?.hasMicPermission && status?.voiceActive);
   const calibrated = Boolean(status?.calibrationComplete);
 
   return (
