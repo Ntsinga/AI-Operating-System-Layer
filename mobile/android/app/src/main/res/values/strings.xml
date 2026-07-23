@@ -1,0 +1,4 @@
+<resources>
+  <string name="app_name">AI-OS</string>
+  <string name="learning_watcher_description">Records semantic UI actions only while you explicitly teach AI-OS a task</string>
+</resources>

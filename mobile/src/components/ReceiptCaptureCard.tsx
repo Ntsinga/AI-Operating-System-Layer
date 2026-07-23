@@ -1,0 +1,9 @@
+import { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import { getMediaCaptureModule } from '../native/MediaCapture';
+import { extractReceipt } from '../planner/expenseClient';
+import { colors } from '../theme';
+import { GradientButton } from './GradientButton';
+
+export function ReceiptCaptureCard() { const [result, setResult] = useState<Record<string, unknown> | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false); async function run() { setBusy(true); setError(null); try { const photo = await getMediaCaptureModule().takePhoto(); setResult(await extractReceipt(photo.uri)); } catch (e) { setError(e instanceof Error ? e.message : 'Receipt extraction failed.'); } finally { setBusy(false); } } return <View style={styles.card}><Text style={styles.title}>Receipt scanner</Text><Text style={styles.description}>Capture a receipt, extract its fields, then review it before adding it to expenses.</Text><GradientButton label={busy ? 'Reading receipt...' : 'Capture and read receipt'} disabled={busy} onPress={() => void run()} />{error ? <Text style={styles.error}>{error}</Text> : null}{result ? <Text style={styles.result} selectable>{JSON.stringify(result, null, 2)}</Text> : null}</View>; }
+const styles = StyleSheet.create({ card: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 14, borderWidth: 1, marginBottom: 16, padding: 16 }, title: { color: colors.textPrimary, fontSize: 16, fontWeight: '800' }, description: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginBottom: 12, marginTop: 6 }, result: { backgroundColor: colors.codeBg, color: colors.textSecondary, fontFamily: 'monospace', fontSize: 12, marginTop: 12, padding: 10 }, error: { color: colors.dangerText, marginTop: 10 } });

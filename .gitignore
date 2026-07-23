@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+dist/
+web-build/
+mobile/.expo/
+mobile/.expo-shared/
+mobile/dist/
+mobile/web-build/
+
+# Android build output
+android/.gradle/
+android/build/
+android/app/build/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+
+# Local environment and secrets
+.env
+.google_tokens.enc
+backend/procedural_memory.sqlite3
+.env.*
+!.env.example
+!mobile/.env.example
+*.keystore
+*.jks
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/settings.json
