@@ -642,6 +642,24 @@ export const listLearnedProceduresTool = {
   execute: () => listLearnedProcedures(),
 } satisfies ToolDefinition<Record<string, never>, unknown>;
 
+function procedureHasRealReplayAction(procedure: { steps: Array<{ arguments?: Record<string, unknown> }> }) {
+  return procedure.steps.some((step) => {
+    const action = String(step.arguments?.action ?? '');
+    return action === 'tap' || action === 'text_input';
+  });
+}
+
+function chooseReplayProcedure<T extends { id: number; scope: string; state: string; steps: Array<{ arguments?: Record<string, unknown> }> }>(selected: T, procedures: T[]) {
+  if (procedureHasRealReplayAction(selected)) return selected;
+  return procedures
+    .filter((candidate) => candidate.state === 'approved' && candidate.scope === selected.scope && procedureHasRealReplayAction(candidate))
+    .sort((left, right) => {
+      const rightActions = right.steps.filter((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? ''))).length;
+      const leftActions = left.steps.filter((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? ''))).length;
+      return rightActions - leftActions || right.id - left.id;
+    })[0] ?? selected;
+}
+
 export const replayLearnedProcedureTool = {
   name: 'replay_learned_procedure',
   description: 'Replays an approved learned phone-use procedure through AccessibilityService. Provide one-time runtimeValues for fields that must be typed, such as pickup and destination. For ride-hailing, call get_current_location first when pickup is "here" and pass that location as the pickup runtime value. Never use this for booking, payment, or final submission without a separate user confirmation.',
@@ -657,12 +675,13 @@ export const replayLearnedProcedureTool = {
   execute: async (input: ReplayLearnedProcedureInput) => {
     const traceId = `replay-${input.procedureId}-${Date.now()}`;
     const procedures = await listLearnedProcedures();
-    const procedure = procedures.find((candidate) => candidate.id === input.procedureId);
-    if (!procedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
-    if (procedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
+    const selectedProcedure = procedures.find((candidate) => candidate.id === input.procedureId);
+    if (!selectedProcedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
+    if (selectedProcedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
+    const procedure = chooseReplayProcedure(selectedProcedure, procedures);
     if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
       await getAppManager().openApplication(procedure.scope);
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      await new Promise((resolve) => setTimeout(resolve, 1800));
     }
     const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector);
     await recordDebugEvents((result.trace ?? []).map((event) => ({
@@ -674,7 +693,14 @@ export const replayLearnedProcedureTool = {
       step: typeof event.step === 'number' ? event.step : undefined,
       details: typeof event.details === 'object' && event.details !== null ? event.details as Record<string, unknown> : {},
     }))).catch(() => undefined);
-    return { procedureId: procedure.id, intent: procedure.intent, ...result, requiresManualConfirmation: result.skipped > 0 || result.verified === 0 };
+    return {
+      requestedProcedureId: selectedProcedure.id,
+      procedureId: procedure.id,
+      intent: procedure.intent,
+      replayFallbackUsed: procedure.id !== selectedProcedure.id,
+      ...result,
+      requiresManualConfirmation: result.skipped > 0 || result.verified === 0,
+    };
   },
 } satisfies ToolDefinition<ReplayLearnedProcedureInput, unknown>;
 

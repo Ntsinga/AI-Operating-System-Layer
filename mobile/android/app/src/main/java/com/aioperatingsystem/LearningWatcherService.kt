@@ -12,6 +12,7 @@ import org.json.JSONObject
 class LearningWatcherService : AccessibilityService() {
   override fun onServiceConnected() { instance = this }
   override fun onAccessibilityEvent(event: AccessibilityEvent) {
+    lastSurface = event.packageName?.toString() ?: lastSurface
     val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
     if (!prefs.getBoolean(RECORDING, false)) return
     val surface = event.packageName?.toString() ?: ""
@@ -58,6 +59,18 @@ class LearningWatcherService : AccessibilityService() {
   fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null): Map<String, Any> {
     var executed = 0; var skipped = 0
     val trace = mutableListOf<Map<String, Any?>>()
+    val targetSurface = actions.firstNotNullOfOrNull { it["surface"]?.takeIf { surface -> surface.isNotBlank() } }
+    if (!targetSurface.isNullOrBlank()) {
+      val ready = waitForSurface(targetSurface, 5000)
+      val payload = mapOf(
+        "flow" to "replay",
+        "event" to if (ready) "target_surface_ready" else "target_surface_timeout",
+        "level" to if (ready) "info" else "warn",
+        "details" to mapOf("surface" to targetSurface, "matched" to ready, "visibleTexts" to currentVisibleTexts())
+      )
+      trace.add(payload)
+      Log.i("AIOS.Replay", JSONObject(payload).toString())
+    }
     for ((index, action) in actions.withIndex()) {
       val step = index + 1
       val type = action["action"] ?: ""
@@ -72,6 +85,10 @@ class LearningWatcherService : AccessibilityService() {
         )
         trace.add(payload)
         Log.i("AIOS.Replay", JSONObject(payload).toString())
+      }
+      if (shouldIgnoreReplayAction(action)) {
+        addTrace("step_ignored", details = mapOf("reason" to "non_actionable_recording_noise", "visibleTexts" to currentVisibleTexts()))
+        continue
       }
       addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
       if (type == "text_input") {
@@ -137,9 +154,29 @@ class LearningWatcherService : AccessibilityService() {
     return mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "trace" to trace)
   }
   private fun selectorDetails(action: Map<String, String>): Map<String, String> =
-    listOf("resourceId", "text", "contentDescription", "fieldKey").mapNotNull { key ->
+    listOf("surface", "resourceId", "text", "contentDescription", "fieldKey").mapNotNull { key ->
       action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
     }.toMap()
+
+  private fun shouldIgnoreReplayAction(action: Map<String, String>): Boolean {
+    val type = action["action"] ?: ""
+    if (type == "observe") return true
+    val hasSelector = !action["resourceId"].isNullOrBlank() ||
+      !action["text"].isNullOrBlank() ||
+      !action["contentDescription"].isNullOrBlank() ||
+      !action["fieldKey"].isNullOrBlank()
+    return type == "scroll" && !hasSelector
+  }
+
+  private fun waitForSurface(surface: String, timeoutMs: Long): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      val rootSurface = rootInActiveWindow?.packageName?.toString()
+      if (rootSurface == surface || lastSurface == surface) return true
+      Thread.sleep(150)
+    }
+    return false
+  }
 
   private fun currentVisibleTexts(): List<String> {
     val root = rootInActiveWindow ?: return emptyList()
@@ -296,6 +333,7 @@ class LearningWatcherService : AccessibilityService() {
   }
   companion object {
     var instance: LearningWatcherService? = null
+    @Volatile private var lastSurface: String = ""
     const val PREFS = "learning_watcher"
     const val RECORDING = "recording"
     const val QUEUE = "queue"

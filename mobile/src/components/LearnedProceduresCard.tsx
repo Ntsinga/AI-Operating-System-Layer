@@ -7,6 +7,21 @@ import { colors } from '../theme';
 
 type Procedure = { id: number; intent: string; steps: Array<{ arguments?: Record<string, unknown> }>; outcome: string; scope: string; version: number; state: string; createdAt: string };
 
+function hasRealReplayAction(procedure: Procedure) {
+  return procedure.steps.some((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? '')));
+}
+
+function chooseReplayProcedure(selected: Procedure, procedures: Procedure[]) {
+  if (hasRealReplayAction(selected)) return selected;
+  return procedures
+    .filter((candidate) => candidate.state === 'approved' && candidate.scope === selected.scope && hasRealReplayAction(candidate))
+    .sort((left, right) => {
+      const rightActions = right.steps.filter((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? ''))).length;
+      const leftActions = left.steps.filter((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? ''))).length;
+      return rightActions - leftActions || right.id - left.id;
+    })[0] ?? selected;
+}
+
 export function LearnedProceduresCard() {
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -28,12 +43,14 @@ export function LearnedProceduresCard() {
     catch (approveError) { setError(approveError instanceof Error ? approveError.message : 'Could not approve procedure.'); }
   }
   async function replay(procedure: Procedure) {
+    const selectedProcedure = procedure;
+    procedure = chooseReplayProcedure(selectedProcedure, procedures);
     const traceId = `replay-${procedure.id}-${Date.now()}`;
     try {
       const values = JSON.parse(runtimeValues) as Record<string, string>;
       if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
         await getAppManager().openApplication(procedure.scope);
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        await new Promise((resolve) => setTimeout(resolve, 1800));
       }
       const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values);
       await recordDebugEvents((result.trace ?? []).map((event) => ({
@@ -45,7 +62,7 @@ export function LearnedProceduresCard() {
         step: typeof event.step === 'number' ? event.step : undefined,
         details: typeof event.details === 'object' && event.details !== null ? event.details as Record<string, unknown> : {},
       }))).catch(() => undefined);
-      setError(`Replay complete: ${result.executed} actions executed, ${result.skipped} skipped. Runtime text values were supplied only for this replay.`);
+      setError(`Replay complete: ${result.executed} actions executed, ${result.skipped} skipped.${procedure.id !== selectedProcedure.id ? ` Used better procedure ${procedure.id} instead of scroll-only procedure ${selectedProcedure.id}.` : ''} Runtime text values were supplied only for this replay.`);
     } catch (replayError) {
       await recordDebugEvents([{
         traceId,
