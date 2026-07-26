@@ -18,6 +18,15 @@ DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.learning")
 
 
+def _record_learning_event(**kwargs: Any) -> None:
+    try:
+        record_event(**kwargs)
+    except Exception:
+        # Debug traces are diagnostic only. They must never prevent teaching or
+        # replay from working, especially during schema migrations on Render.
+        logger.warning("learning_debug_event_failed event=%s", kwargs.get("event"), exc_info=True)
+
+
 def _db() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH) if not postgres_enabled() else __import__('psycopg').connect(__import__('os').environ['DATABASE_URL'])
     connection.execute(
@@ -51,7 +60,7 @@ def start_session(intent: str, app_package: str | None = None) -> dict[str, Any]
             (session_id, intent[:500], (app_package or "")[:200]),
         )
     logger.info("learning_session_started session=%s app=%s", session_id, (app_package or "")[:80])
-    record_event(
+    _record_learning_event(
         trace_id=session_id,
         flow="learning",
         event="session_started",
@@ -74,7 +83,7 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
         actions.append(safe)
         execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions)[:50000], session_id))
     logger.info("learning_action_appended session=%s action_count=%d action=%s", session_id, len(actions), safe.get("action", ""))
-    record_event(
+    _record_learning_event(
         trace_id=session_id,
         flow="learning",
         event="action_appended",
@@ -112,7 +121,7 @@ def complete_session(session_id: str) -> dict[str, Any]:
     history = [{"toolName": action.get("action", "ui_action"), "arguments": action} for action in actions]
     save_procedure(row[0], history, success=True, scope=row[1] or "local", outcome="taught", state="draft")
     logger.info("learning_session_completed session=%s actions=%d procedure_saved=true", session_id, len(actions))
-    record_event(
+    _record_learning_event(
         trace_id=session_id,
         flow="learning",
         event="session_completed",

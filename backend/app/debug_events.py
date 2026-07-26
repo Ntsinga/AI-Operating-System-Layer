@@ -63,6 +63,17 @@ def _db() -> sqlite3.Connection:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
     )
+    if postgres_enabled():
+        # PostgreSQL does not treat "INTEGER PRIMARY KEY" like SQLite does; it
+        # creates a NOT NULL primary key without an auto-increment default.
+        # Existing Render deployments may already have that table, so repair it
+        # in-place instead of relying only on CREATE TABLE.
+        connection.execute("CREATE SEQUENCE IF NOT EXISTS debug_events_id_seq")
+        connection.execute("ALTER TABLE debug_events ALTER COLUMN id SET DEFAULT nextval('debug_events_id_seq')")
+        connection.execute("ALTER SEQUENCE debug_events_id_seq OWNED BY debug_events.id")
+        connection.execute(
+            "SELECT setval('debug_events_id_seq', COALESCE((SELECT MAX(id) FROM debug_events), 0) + 1, false)"
+        )
     return connection
 
 
