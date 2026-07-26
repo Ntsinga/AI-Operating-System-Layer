@@ -103,15 +103,14 @@ class LearningWatcherService : AccessibilityService() {
         addTrace("step_ignored", details = mapOf("reason" to "non_actionable_recording_noise", "visibleTexts" to currentVisibleTexts()))
         continue
       }
-      addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
       if (type == "text_input") {
         val key = action["resourceId"] ?: action["fieldKey"] ?: action["text"] ?: action["contentDescription"]
         val value = key?.let { values[it] } ?: action["value"]
-        val root = rootInActiveWindow
-        val node = root?.let { findNode(it, action["resourceId"], action["text"], action["contentDescription"]) }
+        val node = waitForNode(action["resourceId"], action["text"], action["contentDescription"], 4500)
+        addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
         if (node == null) {
           skipped++
-          addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found", "visibleTexts" to currentVisibleTexts()))
+          addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found_after_wait", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
           continue
         }
         if (value == null) {
@@ -132,11 +131,11 @@ class LearningWatcherService : AccessibilityService() {
         node.recycle()
         continue
       }
-      val root = rootInActiveWindow
-      val node = root?.let { findNode(it, action["resourceId"], action["text"], action["contentDescription"]) }
+      val node = waitForNode(action["resourceId"], action["text"], action["contentDescription"], 4500)
+      addTrace("step_started", details = mapOf("rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
       if (node == null) {
         skipped++
-        addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found", "visibleTexts" to currentVisibleTexts()))
+        addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found_after_wait", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
         continue
       }
       val clickableTargetFound = actionableClickNode(node) != null
@@ -190,6 +189,19 @@ class LearningWatcherService : AccessibilityService() {
     }
     return false
   }
+
+  private fun waitForNode(resourceId: String?, text: String?, contentDescription: String?, timeoutMs: Long): AccessibilityNodeInfo? {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      rootInActiveWindow?.let { root ->
+        findNode(root, resourceId, text, contentDescription)?.let { return it }
+      }
+      Thread.sleep(180)
+    }
+    return null
+  }
+
+  private fun currentRootSurface(): String? = rootInActiveWindow?.packageName?.toString()
 
   private fun currentVisibleTexts(): List<String> {
     val root = rootInActiveWindow ?: return emptyList()
