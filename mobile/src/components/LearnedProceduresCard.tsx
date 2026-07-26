@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures, recordDebugEvents } from '../planner/learningClient';
 import { openAccessibilitySettings, replayLearningActions } from '../native/LearningWatcher';
-import { getAppManager } from '../native/AppManager';
 import { colors } from '../theme';
 
 type Procedure = { id: number; intent: string; steps: Array<{ arguments?: Record<string, unknown> }>; outcome: string; scope: string; version: number; state: string; createdAt: string };
@@ -48,11 +47,8 @@ export function LearnedProceduresCard() {
     const traceId = `replay-${procedure.id}-${Date.now()}`;
     try {
       const values = JSON.parse(runtimeValues) as Record<string, string>;
-      if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
-        await getAppManager().openApplication(procedure.scope);
-        await new Promise((resolve) => setTimeout(resolve, 1800));
-      }
-      const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values);
+      const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
+      const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values, undefined, targetSurface);
       await recordDebugEvents((result.trace ?? []).map((event) => ({
         traceId,
         flow: 'replay',

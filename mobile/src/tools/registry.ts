@@ -679,11 +679,8 @@ export const replayLearnedProcedureTool = {
     if (!selectedProcedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
     if (selectedProcedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
     const procedure = chooseReplayProcedure(selectedProcedure, procedures);
-    if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
-      await getAppManager().openApplication(procedure.scope);
-      await new Promise((resolve) => setTimeout(resolve, 1800));
-    }
-    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector);
+    const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
+    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector, targetSurface);
     await recordDebugEvents((result.trace ?? []).map((event) => ({
       traceId,
       flow: 'replay',

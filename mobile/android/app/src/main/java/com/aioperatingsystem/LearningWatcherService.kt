@@ -56,12 +56,13 @@ class LearningWatcherService : AccessibilityService() {
     Log.i("AIOS.Learning", action.toString())
   }
   override fun onInterrupt() = Unit
-  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null): Map<String, Any> {
+  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null, requestedSurface: String? = null): Map<String, Any> {
     var executed = 0; var skipped = 0
     val trace = mutableListOf<Map<String, Any?>>()
-    val targetSurface = actions.firstNotNullOfOrNull { it["surface"]?.takeIf { surface -> surface.isNotBlank() } }
+    val targetSurface = requestedSurface?.takeIf { it.isNotBlank() }
+      ?: actions.firstNotNullOfOrNull { it["surface"]?.takeIf { surface -> surface.isNotBlank() } }
     if (!targetSurface.isNullOrBlank()) {
-      val ready = waitForSurface(targetSurface, 5000)
+      val ready = waitForSurface(targetSurface, 9000)
       val payload = mapOf(
         "flow" to "replay",
         "event" to if (ready) "target_surface_ready" else "target_surface_timeout",
@@ -70,6 +71,18 @@ class LearningWatcherService : AccessibilityService() {
       )
       trace.add(payload)
       Log.i("AIOS.Replay", JSONObject(payload).toString())
+      if (!ready) {
+        skipped = actions.count { !shouldIgnoreReplayAction(it) }
+        val summary = mapOf(
+          "flow" to "replay",
+          "event" to "replay_aborted",
+          "level" to "warn",
+          "details" to mapOf("reason" to "target_surface_not_ready", "surface" to targetSurface, "executed" to executed, "skipped" to skipped, "verified" to 0)
+        )
+        trace.add(summary)
+        Log.i("AIOS.Replay", JSONObject(summary).toString())
+        return mapOf("executed" to executed, "skipped" to skipped, "verified" to 0, "trace" to trace)
+      }
     }
     for ((index, action) in actions.withIndex()) {
       val step = index + 1
@@ -172,7 +185,7 @@ class LearningWatcherService : AccessibilityService() {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {
       val rootSurface = rootInActiveWindow?.packageName?.toString()
-      if (rootSurface == surface || lastSurface == surface) return true
+      if (rootSurface == surface) return true
       Thread.sleep(150)
     }
     return false
