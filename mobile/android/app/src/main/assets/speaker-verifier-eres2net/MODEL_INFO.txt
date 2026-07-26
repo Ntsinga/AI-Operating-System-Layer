@@ -1,0 +1,5 @@
+Model: damo/speech_eres2net_sv_en_voxceleb_16k
+Source: https://github.com/modelscope/3D-Speaker
+License: Apache License 2.0
+Input: 80-dim log-Mel features at 16 kHz
+Output: 192-dim speaker embedding
