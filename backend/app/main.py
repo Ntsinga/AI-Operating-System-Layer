@@ -22,6 +22,7 @@ from app.receipt import extract_receipt  # noqa: E402
 from app.sms_finances import sms_finances  # noqa: E402
 from app.procedural_memory import approve_procedure, delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
 from app.learning import append_action, complete_session, start_session  # noqa: E402
+from app.debug_events import list_events, record_events  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
 logger = logging.getLogger("aios.api")
@@ -43,6 +44,10 @@ class LearningSessionRequest(BaseModel):
 
 class LearningActionRequest(BaseModel):
     action: dict[str, Any]
+
+
+class DebugEventsRequest(BaseModel):
+    events: list[dict[str, Any]]
 
 
 @app.post("/learning/sessions")
@@ -68,6 +73,16 @@ def learning_complete(session_id: str) -> dict[str, Any]:
         raise HTTPException(404, str(error))
     except ValueError as error:
         raise HTTPException(409, str(error))
+
+
+@app.post("/debug/events")
+def debug_events_create(req: DebugEventsRequest) -> dict[str, Any]:
+    return record_events(req.events)
+
+
+@app.get("/debug/events")
+def debug_events_list(traceId: Optional[str] = None, sessionId: Optional[str] = None, procedureId: Optional[int] = None, limit: int = 100) -> list[dict[str, Any]]:
+    return list_events(trace_id=traceId, session_id=sessionId, procedure_id=procedureId, limit=limit)
 
 
 @app.get("/connect/google/start")

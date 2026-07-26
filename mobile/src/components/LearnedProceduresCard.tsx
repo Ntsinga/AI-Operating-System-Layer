@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures } from '../planner/learningClient';
+import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures, recordDebugEvents } from '../planner/learningClient';
 import { openAccessibilitySettings, replayLearningActions } from '../native/LearningWatcher';
 import { getAppManager } from '../native/AppManager';
 import { colors } from '../theme';
@@ -28,6 +28,7 @@ export function LearnedProceduresCard() {
     catch (approveError) { setError(approveError instanceof Error ? approveError.message : 'Could not approve procedure.'); }
   }
   async function replay(procedure: Procedure) {
+    const traceId = `replay-${procedure.id}-${Date.now()}`;
     try {
       const values = JSON.parse(runtimeValues) as Record<string, string>;
       if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
@@ -35,8 +36,25 @@ export function LearnedProceduresCard() {
         await new Promise((resolve) => setTimeout(resolve, 900));
       }
       const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values);
+      await recordDebugEvents((result.trace ?? []).map((event) => ({
+        traceId,
+        flow: 'replay',
+        event: String(event.event ?? 'native_replay_event'),
+        level: String(event.level ?? 'info'),
+        procedureId: procedure.id,
+        step: typeof event.step === 'number' ? event.step : undefined,
+        details: typeof event.details === 'object' && event.details !== null ? event.details as Record<string, unknown> : {},
+      }))).catch(() => undefined);
       setError(`Replay complete: ${result.executed} actions executed, ${result.skipped} skipped. Runtime text values were supplied only for this replay.`);
     } catch (replayError) {
+      await recordDebugEvents([{
+        traceId,
+        flow: 'replay',
+        event: 'replay_error',
+        level: 'error',
+        procedureId: procedure.id,
+        details: { reason: replayError instanceof Error ? replayError.message : 'Enable Accessibility to replay.' },
+      }]).catch(() => undefined);
       setError(replayError instanceof Error ? replayError.message : 'Enable Accessibility to replay.');
       await openAccessibilitySettings().catch(() => undefined);
     }

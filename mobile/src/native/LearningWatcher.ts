@@ -3,7 +3,7 @@ import { Linking, NativeModules } from 'react-native';
 type LearningWatcherModule = {
   setRecording: (enabled: boolean, targetSurface?: string) => Promise<void>;
   drainActions: () => Promise<Array<Record<string, unknown>>>;
-  replayActions: (actions: Array<Record<string, unknown>>, values: Record<string, string>, completion?: Record<string, string>) => Promise<{ executed: number; skipped: number; verified: number }>;
+  replayActions: (actions: Array<Record<string, unknown>>, values: Record<string, string>, completion?: Record<string, string>) => Promise<{ executed: number; skipped: number; verified: number; trace?: Array<Record<string, unknown>> }>;
 };
 
 const native = NativeModules.LearningWatcher as LearningWatcherModule | undefined;

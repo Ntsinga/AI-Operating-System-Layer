@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { appendLearningAction, completeLearningSession, startLearningSession } from '../planner/learningClient';
+import { appendLearningAction, completeLearningSession, startLearningSession, recordDebugEvents } from '../planner/learningClient';
 import { drainLearningActions, openAccessibilitySettings, setLearningRecording } from '../native/LearningWatcher';
 import { getAppManager, type InstalledApp } from '../native/AppManager';
 import { colors } from '../theme';
@@ -24,6 +24,13 @@ export function LearningModeCard() {
       setCount(0); setMessage(`Preparing to record ${selectedApp.name}...`);
       await setLearningRecording(true, selectedApp.packageName);
       const session = await startLearningSession(intent.trim(), selectedApp.packageName);
+      await recordDebugEvents([{
+        traceId: session.sessionId,
+        flow: 'learning',
+        event: 'native_recording_enabled',
+        sessionId: session.sessionId,
+        details: { appPackage: selectedApp.packageName, intent: intent.trim() },
+      }]).catch(() => undefined);
       setSessionId(session.sessionId); setMessage(`Recording ${selectedApp.name}. Perform the task, then return here to finish.`);
       timer.current = setInterval(async () => { await drainPendingActions(session.sessionId); }, 800);
       await getAppManager().openApplication(selectedApp.packageName);
@@ -40,11 +47,28 @@ export function LearningModeCard() {
       const drained = await drainPendingActions(sessionId);
       await setLearningRecording(false, undefined);
       const result = await completeLearningSession(sessionId);
+      await recordDebugEvents([{
+        traceId: sessionId,
+        flow: 'learning',
+        event: 'native_recording_disabled',
+        sessionId,
+        details: { actionCount: result.actions.length, appPackage: selectedApp?.packageName },
+      }]).catch(() => undefined);
       setMessage(`Learned ${result.actions.length} semantic actions. Review it before reuse.`);
       setSessionId(null);
       if (drained === 0 && result.actions.length === 0) setMessage('No actions were captured. Enable Accessibility and make sure you perform the task inside the selected app.');
     } catch (error) {
       await setLearningRecording(false, undefined).catch(() => undefined);
+      if (sessionId) {
+        await recordDebugEvents([{
+          traceId: sessionId,
+          flow: 'learning',
+          event: 'session_error',
+          level: 'error',
+          sessionId,
+          details: { reason: error instanceof Error ? error.message : 'Could not finish teaching.' },
+        }]).catch(() => undefined);
+      }
       setMessage(error instanceof Error ? error.message : 'Could not finish teaching.');
     }
   }

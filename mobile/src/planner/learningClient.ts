@@ -18,6 +18,17 @@ export type LearningAction = {
   };
 };
 
+export type DebugEvent = {
+  traceId: string;
+  flow: 'learning' | 'replay' | string;
+  event: string;
+  level?: 'info' | 'warn' | 'error' | string;
+  sessionId?: string;
+  procedureId?: number;
+  step?: number;
+  details?: Record<string, unknown>;
+};
+
 async function request(path: string, method: string, body?: unknown) {
   const response = await fetch(`${BACKEND_BASE_URL}${path}`, {
     method,
@@ -51,4 +62,19 @@ export function deleteLearnedProcedure(id: number) {
 
 export function approveLearnedProcedure(id: number) {
   return request(`/procedures/${id}/approve`, 'POST');
+}
+
+export function recordDebugEvents(events: DebugEvent[]) {
+  if (events.length === 0) return Promise.resolve({ stored: 0 });
+  return request('/debug/events', 'POST', { events });
+}
+
+export function listDebugEvents(params: { traceId?: string; sessionId?: string; procedureId?: number; limit?: number } = {}) {
+  const search = new URLSearchParams();
+  if (params.traceId) search.set('traceId', params.traceId);
+  if (params.sessionId) search.set('sessionId', params.sessionId);
+  if (params.procedureId !== undefined) search.set('procedureId', String(params.procedureId));
+  if (params.limit !== undefined) search.set('limit', String(params.limit));
+  const query = search.toString();
+  return request(`/debug/events${query ? `?${query}` : ''}`, 'GET') as Promise<DebugEvent[]>;
 }

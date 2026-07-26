@@ -33,7 +33,7 @@ import { searchGmail, readGmail, searchDrive, readDrive, getGoogleCalendarUpcomi
 import { getMonthlyFinances, analyzeSmsFinances, analyzeFinances, extractReceipt, type MonthlyFinance } from '../planner/expenseClient';
 import { getSmsInboxModule, type SmsMessage } from '../native/SmsInbox';
 import type { ToolDefinition } from './types';
-import { listLearnedProcedures } from '../planner/learningClient';
+import { listLearnedProcedures, recordDebugEvents } from '../planner/learningClient';
 import { replayLearningActions } from '../native/LearningWatcher';
 
 export type OpenApplicationInput = {
@@ -655,6 +655,7 @@ export const replayLearnedProcedureTool = {
     required: ['procedureId'],
   },
   execute: async (input: ReplayLearnedProcedureInput) => {
+    const traceId = `replay-${input.procedureId}-${Date.now()}`;
     const procedures = await listLearnedProcedures();
     const procedure = procedures.find((candidate) => candidate.id === input.procedureId);
     if (!procedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
@@ -664,6 +665,15 @@ export const replayLearnedProcedureTool = {
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
     const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector);
+    await recordDebugEvents((result.trace ?? []).map((event) => ({
+      traceId,
+      flow: 'replay',
+      event: String(event.event ?? 'native_replay_event'),
+      level: String(event.level ?? 'info'),
+      procedureId: procedure.id,
+      step: typeof event.step === 'number' ? event.step : undefined,
+      details: typeof event.details === 'object' && event.details !== null ? event.details as Record<string, unknown> : {},
+    }))).catch(() => undefined);
     return { procedureId: procedure.id, intent: procedure.intent, ...result, requiresManualConfirmation: result.skipped > 0 || result.verified === 0 };
   },
 } satisfies ToolDefinition<ReplayLearnedProcedureInput, unknown>;

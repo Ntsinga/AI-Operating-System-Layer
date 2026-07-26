@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import learning, procedural_memory
+from app import debug_events
 
 
 class ProceduralMemoryAndLearningTests(unittest.TestCase):
@@ -12,10 +13,13 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         db_path = Path(self.temp_dir.name) / "memory.sqlite3"
         self.db_patch = patch.object(procedural_memory, "DB_PATH", db_path)
         self.learning_patch = patch.object(learning, "DB_PATH", db_path)
+        self.debug_patch = patch.object(debug_events, "DB_PATH", db_path)
         self.db_patch.start()
         self.learning_patch.start()
+        self.debug_patch.start()
 
     def tearDown(self):
+        self.debug_patch.stop()
         self.learning_patch.stop()
         self.db_patch.stop()
         self.temp_dir.cleanup()
@@ -38,6 +42,32 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         self.assertTrue(result["procedureSaved"])
         self.assertEqual(result["actions"][0], {"action": "tap", "text": "Book"})
         self.assertEqual(procedural_memory.list_procedures()[0]["state"], "draft")
+
+    def test_debug_events_are_persisted_and_sanitized(self):
+        result = debug_events.record_events([
+            {
+                "traceId": "trace-1",
+                "flow": "replay",
+                "event": "step_skipped",
+                "level": "warn",
+                "procedureId": 42,
+                "step": 3,
+                "details": {
+                    "reason": "selector_not_found",
+                    "resourceId": "com.example:id/book",
+                    "visibleTexts": ["Home", "Book"],
+                    "screenshot": "must-not-store",
+                    "password": "must-not-store",
+                },
+            }
+        ])
+        self.assertEqual(result["stored"], 1)
+        events = debug_events.list_events(trace_id="trace-1")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["procedureId"], 42)
+        self.assertEqual(events[0]["details"]["reason"], "selector_not_found")
+        self.assertNotIn("screenshot", events[0]["details"])
+        self.assertNotIn("password", events[0]["details"])
 
     def test_learning_session_preserves_rich_semantic_selectors(self):
         session = learning.start_session("teach destination", "com.example.ride")

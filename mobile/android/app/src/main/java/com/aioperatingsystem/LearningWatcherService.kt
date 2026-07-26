@@ -2,6 +2,7 @@ package com.aioperatingsystem
 
 import android.accessibilityservice.AccessibilityService
 import android.text.InputType
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
@@ -51,36 +52,112 @@ class LearningWatcherService : AccessibilityService() {
     val queue = JSONArray(prefs.getString(QUEUE, "[]"))
     queue.put(action)
     prefs.edit().putString(QUEUE, queue.toString().take(50000)).apply()
+    Log.i("AIOS.Learning", action.toString())
   }
   override fun onInterrupt() = Unit
-  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null): Map<String, Int> {
+  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null): Map<String, Any> {
     var executed = 0; var skipped = 0
-    for (action in actions) {
+    val trace = mutableListOf<Map<String, Any?>>()
+    for ((index, action) in actions.withIndex()) {
+      val step = index + 1
       val type = action["action"] ?: ""
+      val selector = selectorDetails(action)
+      fun addTrace(event: String, level: String = "info", details: Map<String, Any?> = emptyMap()) {
+        val payload = mapOf(
+          "flow" to "replay",
+          "event" to event,
+          "level" to level,
+          "step" to step,
+          "details" to (mapOf("action" to type, "selector" to selector) + details)
+        )
+        trace.add(payload)
+        Log.i("AIOS.Replay", JSONObject(payload).toString())
+      }
+      addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
       if (type == "text_input") {
         val key = action["resourceId"] ?: action["fieldKey"] ?: action["text"] ?: action["contentDescription"]
         val value = key?.let { values[it] } ?: action["value"]
         val root = rootInActiveWindow
         val node = root?.let { findNode(it, action["resourceId"], action["text"], action["contentDescription"]) }
-        if (node == null || value == null) { skipped++; continue }
+        if (node == null) {
+          skipped++
+          addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found", "visibleTexts" to currentVisibleTexts()))
+          continue
+        }
+        if (value == null) {
+          skipped++
+          addTrace("step_skipped", "warn", mapOf("reason" to "missing_runtime_or_recorded_value", "visibleTexts" to currentVisibleTexts()))
+          node.recycle()
+          continue
+        }
         val bundle = android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }
-        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)) executed++ else skipped++
+        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+        if (ok) {
+          executed++
+          addTrace("step_executed", details = mapOf("attempted" to "set_text", "fieldKey" to key))
+        } else {
+          skipped++
+          addTrace("step_skipped", "warn", mapOf("reason" to "set_text_failed", "fieldKey" to key, "visibleTexts" to currentVisibleTexts()))
+        }
         node.recycle()
         continue
       }
       val root = rootInActiveWindow
       val node = root?.let { findNode(it, action["resourceId"], action["text"], action["contentDescription"]) }
-      if (node == null) { skipped++; continue }
+      if (node == null) {
+        skipped++
+        addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found", "visibleTexts" to currentVisibleTexts()))
+        continue
+      }
+      val clickableTargetFound = actionableClickNode(node) != null
       val ok = when (type) {
         "tap" -> performClick(node)
         "scroll" -> performScroll(node)
         else -> false
       }
-      if (ok) executed++ else skipped++
+      if (ok) {
+        executed++
+        addTrace("step_executed", details = mapOf("attempted" to type, "clickableTargetFound" to clickableTargetFound))
+      } else {
+        skipped++
+        addTrace("step_skipped", "warn", mapOf("reason" to "action_failed_or_unsupported", "attempted" to type, "clickableTargetFound" to clickableTargetFound, "visibleTexts" to currentVisibleTexts()))
+      }
       node.recycle()
     }
     val verified = completion?.let { findNode(rootInActiveWindow ?: return@let false, it["resourceId"], it["text"], it["contentDescription"]) != null } ?: false
-    return mapOf("executed" to executed, "skipped" to skipped, "verified" to if (verified || completion == null) 1 else 0)
+    val verifiedInt = if (verified || completion == null) 1 else 0
+    val summary = mapOf(
+      "flow" to "replay",
+      "event" to "replay_completed",
+      "level" to if (skipped > 0 || verifiedInt == 0) "warn" else "info",
+      "details" to mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "completion" to completion)
+    )
+    trace.add(summary)
+    Log.i("AIOS.Replay", JSONObject(summary).toString())
+    return mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "trace" to trace)
+  }
+  private fun selectorDetails(action: Map<String, String>): Map<String, String> =
+    listOf("resourceId", "text", "contentDescription", "fieldKey").mapNotNull { key ->
+      action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
+    }.toMap()
+
+  private fun currentVisibleTexts(): List<String> {
+    val root = rootInActiveWindow ?: return emptyList()
+    val texts = mutableListOf<String>()
+    collectVisibleTexts(root, texts)
+    return texts
+  }
+
+  private fun collectVisibleTexts(node: AccessibilityNodeInfo, texts: MutableList<String>) {
+    val label = if (isSensitiveTextNode(node)) null else readableLabel(node)
+    if (!label.isNullOrBlank() && texts.size < 25 && !texts.contains(label.take(120))) texts.add(label.take(120))
+    for (index in 0 until node.childCount) {
+      if (texts.size >= 25) return
+      node.getChild(index)?.let { child ->
+        collectVisibleTexts(child, texts)
+        child.recycle()
+      }
+    }
   }
   private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?, contentDescription: String?): AccessibilityNodeInfo? {
     if (!resourceId.isNullOrBlank()) root.findAccessibilityNodeInfosByViewId(resourceId).firstOrNull()?.let { return it }
