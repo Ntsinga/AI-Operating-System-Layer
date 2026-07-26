@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures } from '../planner/learningClient';
 import { openAccessibilitySettings, replayLearningActions } from '../native/LearningWatcher';
+import { getAppManager } from '../native/AppManager';
 import { colors } from '../theme';
 
 type Procedure = { id: number; intent: string; steps: Array<{ arguments?: Record<string, unknown> }>; outcome: string; scope: string; version: number; state: string; createdAt: string };
@@ -29,6 +30,10 @@ export function LearnedProceduresCard() {
   async function replay(procedure: Procedure) {
     try {
       const values = JSON.parse(runtimeValues) as Record<string, string>;
+      if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
+        await getAppManager().openApplication(procedure.scope);
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
       const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values);
       setError(`Replay complete: ${result.executed} actions executed, ${result.skipped} skipped. Runtime text values were supplied only for this replay.`);
     } catch (replayError) {

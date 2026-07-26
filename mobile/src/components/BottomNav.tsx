@@ -1,6 +1,7 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { type ComponentType } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { brandGradient, colors, gradientEnd, gradientStart } from '../theme';
 import { ChatIcon, ToolsIcon } from './TabIcons';
@@ -20,8 +21,13 @@ const TABS: { key: TabKey; label: string; Icon: ComponentType<{ color: string; s
 // Two-tab bottom navigation: Chat (the AI assistant) and Tools (individual capabilities).
 // The active tab gets a gradient pill so it reads against the dark bar.
 export function BottomNav({ active, onChange }: Props) {
+  const insets = useSafeAreaInsets();
+
   return (
-    <View style={styles.bar}>
+    // Android's edge-to-edge mode (gradle.properties: edgeToEdgeEnabled=true) draws this app
+    // behind the system navigation bar; without adding its height here, the nav pills render
+    // underneath the phone's own back/home/recents buttons instead of above them.
+    <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 12) + 12 }]}>
       {TABS.map((tab) => {
         const isActive = tab.key === active;
         const iconColor = isActive ? colors.onAccent : colors.textMuted;
@@ -66,7 +72,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     flexDirection: 'row',
     gap: 10,
-    paddingBottom: 24,
     paddingHorizontal: 16,
     paddingTop: 10,
   },

@@ -62,7 +62,7 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("Learning session is no longer recording.")
         actions = json.loads(row[0])
         # Keep semantic selectors and omit screenshots, passwords, and arbitrary payloads.
-        safe = {key: action.get(key) for key in ("surface", "role", "text", "resourceId", "action", "value") if key in action}
+        safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "fieldKey", "action", "value", "screen", "clickable", "enabled") if key in action}
         actions.append(safe)
         execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions)[:50000], session_id))
     logger.info("learning_action_appended session=%s action_count=%d action=%s", session_id, len(actions), safe.get("action", ""))

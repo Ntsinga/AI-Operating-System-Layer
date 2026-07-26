@@ -39,6 +39,35 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         self.assertEqual(result["actions"][0], {"action": "tap", "text": "Book"})
         self.assertEqual(procedural_memory.list_procedures()[0]["state"], "draft")
 
+    def test_learning_session_preserves_rich_semantic_selectors(self):
+        session = learning.start_session("teach destination", "com.example.ride")
+        screen = {
+            "surface": "com.example.ride",
+            "title": "Where to?",
+            "visibleTexts": ["Where to?", "Home"],
+            "interactiveElements": [{"resourceId": "destination", "text": "Where to?"}],
+        }
+        learning.append_action(
+            session["sessionId"],
+            {
+                "schemaVersion": 2,
+                "surface": "com.example.ride",
+                "role": "android.widget.EditText",
+                "action": "text_input",
+                "resourceId": "destination",
+                "fieldKey": "destination",
+                "value": "Home",
+                "screen": screen,
+                "screenshot": "must-not-store",
+            },
+        )
+        result = learning.complete_session(session["sessionId"])
+        self.assertEqual(result["actions"][0]["schemaVersion"], 2)
+        self.assertEqual(result["actions"][0]["fieldKey"], "destination")
+        self.assertEqual(result["actions"][0]["value"], "Home")
+        self.assertEqual(result["actions"][0]["screen"], screen)
+        self.assertNotIn("screenshot", result["actions"][0])
+
     def test_draft_requires_explicit_approval(self):
         session = learning.start_session("teach a task")
         learning.append_action(session["sessionId"], {"action": "tap", "resourceId": "confirm"})

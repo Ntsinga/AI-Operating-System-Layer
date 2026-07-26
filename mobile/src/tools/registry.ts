@@ -85,7 +85,7 @@ export type OpenUrlInput = {
 export type ReplayLearnedProcedureInput = {
   procedureId: number;
   runtimeValues?: Record<string, string>;
-  completionSelector?: { resourceId?: string; text?: string };
+  completionSelector?: { resourceId?: string; text?: string; contentDescription?: string };
 };
 
 export type SearchWebInput = {
@@ -418,7 +418,7 @@ export const analyzeFinancesTool = {
 export const getCurrentLocationTool = {
   name: 'get_current_location',
   description:
-    'Gets the device current location (latitude/longitude) with explicit user permission. Requests ACCESS_FINE_LOCATION at call time.',
+    'Gets the device current location (latitude/longitude) with explicit user permission. Use this to resolve "here", "current location", or pickup-from-me before replaying ride-hailing procedures.',
   parameters: { type: 'object', properties: {} },
   execute: () => getLocationManager().getCurrentLocation(),
 } satisfies ToolDefinition<void, CurrentLocation>;
@@ -644,12 +644,12 @@ export const listLearnedProceduresTool = {
 
 export const replayLearnedProcedureTool = {
   name: 'replay_learned_procedure',
-  description: 'Replays an approved learned phone-use procedure through AccessibilityService. Provide one-time runtimeValues for fields that must be typed, such as a destination. Never use this for payment submission without a separate user confirmation.',
+  description: 'Replays an approved learned phone-use procedure through AccessibilityService. Provide one-time runtimeValues for fields that must be typed, such as pickup and destination. For ride-hailing, call get_current_location first when pickup is "here" and pass that location as the pickup runtime value. Never use this for booking, payment, or final submission without a separate user confirmation.',
   parameters: {
     type: 'object',
     properties: {
       procedureId: { type: 'number', description: 'ID returned by list_learned_procedures.' },
-      runtimeValues: { type: 'object', description: 'One-time values keyed by recorded resource ID, for example {"com.safeboda:id/destination":"Home"}. These values are not saved.' },
+      runtimeValues: { type: 'object', description: 'One-time values keyed by recorded resource ID, content description, field key, or visible field label. Example: {"com.safeboda:id/pickup":"0.3476,32.5825","com.safeboda:id/destination":"Acacia Mall"}. These values are not saved.' },
       completionSelector: { type: 'object', description: 'Optional selector proving the task completed, using a resourceId or visible text.' },
     },
     required: ['procedureId'],
@@ -659,6 +659,10 @@ export const replayLearnedProcedureTool = {
     const procedure = procedures.find((candidate) => candidate.id === input.procedureId);
     if (!procedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
     if (procedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
+    if (procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.')) {
+      await getAppManager().openApplication(procedure.scope);
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
     const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector);
     return { procedureId: procedure.id, intent: procedure.intent, ...result, requiresManualConfirmation: result.skipped > 0 || result.verified === 0 };
   },

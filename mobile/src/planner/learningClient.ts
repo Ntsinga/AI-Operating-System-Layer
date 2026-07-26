@@ -4,9 +4,18 @@ export type LearningAction = {
   surface?: string;
   role?: string;
   text?: string;
+  contentDescription?: string;
   resourceId?: string;
+  fieldKey?: string;
   action?: string;
   value?: string;
+  screen?: {
+    surface?: string;
+    role?: string;
+    title?: string;
+    visibleTexts?: string[];
+    interactiveElements?: Array<Record<string, unknown>>;
+  };
 };
 
 async function request(path: string, method: string, body?: unknown) {

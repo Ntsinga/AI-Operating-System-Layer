@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { BottomNav, type TabKey } from './src/components/BottomNav';
 import { BrandMark } from './src/components/BrandMark';
@@ -35,21 +36,23 @@ export default function App() {
   }, []);
 
   return (
-    <View style={styles.screen}>
-      <StatusBar style="light" />
+    <SafeAreaProvider>
+      <View style={styles.screen}>
+        <StatusBar style="light" />
 
-      <View style={styles.header}>
-        <BrandMark size={36} />
-        <View>
-          <Text style={styles.wordmark}>AI-OS</Text>
-          <Text style={styles.eyebrow}>Phone Orchestration Layer</Text>
+        <View style={styles.header}>
+          <BrandMark size={36} />
+          <View>
+            <Text style={styles.wordmark}>AI-OS</Text>
+            <Text style={styles.eyebrow}>Phone Orchestration Layer</Text>
+          </View>
         </View>
+
+        <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} /> : <ToolsScreen />}</View>
+
+        <BottomNav active={tab} onChange={setTab} />
       </View>
-
-      <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} /> : <ToolsScreen />}</View>
-
-      <BottomNav active={tab} onChange={setTab} />
-    </View>
+    </SafeAreaProvider>
   );
 }
 

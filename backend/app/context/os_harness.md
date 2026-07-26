@@ -35,6 +35,15 @@ confirmation before irreversible actions such as booking, payment, sending, or s
 procedure is missing, still a draft, or skips required actions, ask the user to teach or complete
 the step manually.
 
+For ride-hailing or delivery procedures, resolve relative places before replay. If the user says
+"here", "current location", "from me", or gives no pickup, call `get_current_location` first and
+use the returned latitude/longitude as the pickup runtime value when the learned procedure has a
+pickup/current-location field. If the user says "home" and the learned procedure captured a saved
+home value, you may reuse that saved value; otherwise ask for or infer the address only from an
+available memory/tool result. Extract named places such as "Acacia Mall" as destination runtime
+values. Do not book or submit the ride until the replay reaches a review/confirmation point and the
+user confirms the fare/driver/action.
+
 ## Network diagnosis and repair
 
 For “my internet is unreliable,” call `diagnose_network`, then `run_network_test` before changing

@@ -29,9 +29,9 @@ writing any Expo/React Native code.
   **Do not remove this**; if you see the loopback error, verify `TEMP`/`TMP` point at
   `C:\Windows\Temp` (NOT `-Djava.io.tmpdir`, which does not fix it). Full diagnosis in `ERROR_LOG.md`.
 - **Running the app**: from `mobile/`, `npm run android` (with `JAVA_HOME` set as above) builds,
-  installs `com.ntsinga.mobile`, and launches on the connected emulator/device.
+  installs `com.aioperatingsystem`, and launches on the connected emulator/device.
 - `expo run:android` does not exit on success — it hands off to the Metro dev server, which runs
-  indefinitely. A build that installs the APK and prints "Opening com.ntsinga.mobile/.MainActivity"
+  indefinitely. A build that installs the APK and prints "Opening com.aioperatingsystem/.MainActivity"
   succeeded even though the command never "completes". Verify success via the APK under
   `android/app/build/outputs/apk/debug/`, `adb shell pm list packages`, and a screenshot — not by
   waiting for the command to end.
@@ -46,7 +46,7 @@ writing any Expo/React Native code.
 
 ## Native module conventions
 
-- Kotlin native modules live under `android/app/src/main/java/com/ntsinga/mobile/` and are
+- Kotlin native modules live under `android/app/src/main/java/com/aioperatingsystem/` and are
   hand-authored and committed (the Android project is not regenerated on every build). Edit
   `AndroidManifest.xml` directly; `app.json` does not manage the `<queries>` block. If
   `expo prebuild` is re-run, re-apply manual manifest edits (or move them into a config plugin).

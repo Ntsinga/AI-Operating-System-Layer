@@ -18,6 +18,11 @@ android/app/build/
 mobile/android/.gradle/
 mobile/android/build/
 mobile/android/app/build/
+mobile/android/gradle-diagnostic.*
+
+# Local model/export scratch space
+.tmp-3dspeaker/
+models/
 
 # Local environment and secrets
 .env
