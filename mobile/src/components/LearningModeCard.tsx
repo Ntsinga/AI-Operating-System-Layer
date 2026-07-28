@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { DeviceEventEmitter, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { appendLearningActionsBatch, completeLearningSession, startLearningSession, recordDebugEvents } from '../planner/learningClient';
 import { clearLearningActions, openAccessibilitySettings, peekLearningActions, setLearningRecording } from '../native/LearningWatcher';
 import { getAppManager, type InstalledApp } from '../native/AppManager';
@@ -81,6 +81,7 @@ export function LearningModeCard() {
         details: { beforeDisable, afterDisable, total: drained, counts: drainedCounts, appPackage: selectedApp?.packageName },
       }]).catch(() => undefined);
       const result = await completeLearningSession(finishingSessionId);
+      DeviceEventEmitter.emit('aios.learning.procedureSaved', { sessionId: finishingSessionId, actionCount: result.actions.length });
       await recordDebugEvents([{
         traceId: finishingSessionId,
         flow: 'learning',

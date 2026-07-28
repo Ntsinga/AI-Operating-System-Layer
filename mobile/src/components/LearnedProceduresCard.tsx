@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { DeviceEventEmitter, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { openAccessibilitySettings, replayLearningActions } from '../native/LearningWatcher';
 import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures, recordDebugEvents } from '../planner/learningClient';
@@ -33,7 +33,13 @@ export function LearnedProceduresCard() {
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    const subscription = DeviceEventEmitter.addListener('aios.learning.procedureSaved', () => {
+      void refresh();
+    });
+    return () => subscription.remove();
+  }, [refresh]);
 
   async function remove(id: number) {
     if (busy) return;

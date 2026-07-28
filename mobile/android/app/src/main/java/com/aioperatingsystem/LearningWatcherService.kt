@@ -1,6 +1,7 @@
 package com.aioperatingsystem
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Rect
 import android.text.InputType
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -37,7 +38,16 @@ class LearningWatcherService : AccessibilityService() {
       val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null else event.text?.firstOrNull()?.toString()
       if (!label.isNullOrBlank()) action.put("text", label.take(120))
       event.source?.let { node ->
-        node.viewIdResourceName?.take(160)?.let { action.put("resourceId", it) }
+        node.viewIdResourceName?.take(160)?.let { resourceId ->
+          action.put("resourceId", resourceId)
+          if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+            rootInActiveWindow?.let { root ->
+              resourceOccurrenceIndex(root, node, resourceId)?.let { occurrence ->
+                action.put("resourceIdOccurrence", occurrence.toString())
+              }
+            }
+          }
+        }
         val nodeLabel = readableLabel(node)
         if (!nodeLabel.isNullOrBlank() && !action.has("text")) action.put("text", nodeLabel.take(120))
         node.contentDescription?.toString()?.take(120)?.let { action.put("contentDescription", it) }
@@ -128,7 +138,15 @@ class LearningWatcherService : AccessibilityService() {
       if (type == "text_input") {
         val key = action["resourceId"] ?: action["fieldKey"] ?: action["text"] ?: action["contentDescription"]
         val value = key?.let { values[it] } ?: action["value"]
-        val node = waitForNode(action["resourceId"] ?: action["fieldKey"], null, action["contentDescription"], 4500)
+        val occurrence = action["resourceIdOccurrence"]?.toIntOrNull()
+        val node = waitForNode(
+          action["resourceId"] ?: action["fieldKey"],
+          null,
+          action["contentDescription"],
+          4500,
+          resourceIdOccurrence = occurrence,
+          preferLastDuplicate = occurrence == null,
+        )
         addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
         if (node == null) {
           skipped++
@@ -153,7 +171,7 @@ class LearningWatcherService : AccessibilityService() {
         node.recycle()
         continue
       }
-      val node = waitForNode(action["resourceId"], action["text"], action["contentDescription"], 4500)
+      val node = waitForNode(action["resourceId"], action["text"], action["contentDescription"], 4500, resourceIdOccurrence = action["resourceIdOccurrence"]?.toIntOrNull())
       addTrace("step_started", details = mapOf("rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
       if (node == null) {
         skipped++
@@ -188,7 +206,7 @@ class LearningWatcherService : AccessibilityService() {
     return mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "trace" to trace)
   }
   private fun selectorDetails(action: Map<String, String>): Map<String, String> =
-    listOf("surface", "resourceId", "text", "contentDescription", "fieldKey", "screenTitle").mapNotNull { key ->
+    listOf("surface", "resourceId", "resourceIdOccurrence", "text", "contentDescription", "fieldKey", "screenTitle").mapNotNull { key ->
       action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
     }.toMap()
 
@@ -212,11 +230,11 @@ class LearningWatcherService : AccessibilityService() {
     return false
   }
 
-  private fun waitForNode(resourceId: String?, text: String?, contentDescription: String?, timeoutMs: Long): AccessibilityNodeInfo? {
+  private fun waitForNode(resourceId: String?, text: String?, contentDescription: String?, timeoutMs: Long, resourceIdOccurrence: Int? = null, preferLastDuplicate: Boolean = false): AccessibilityNodeInfo? {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {
       rootInActiveWindow?.let { root ->
-        findNode(root, resourceId, text, contentDescription)?.let { return it }
+        findNode(root, resourceId, text, contentDescription, resourceIdOccurrence, preferLastDuplicate)?.let { return it }
       }
       Thread.sleep(180)
     }
@@ -294,9 +312,16 @@ class LearningWatcherService : AccessibilityService() {
       }
     }
   }
-  private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?, contentDescription: String?): AccessibilityNodeInfo? {
+  private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?, contentDescription: String?, resourceIdOccurrence: Int? = null, preferLastDuplicate: Boolean = false): AccessibilityNodeInfo? {
     if (!resourceId.isNullOrBlank()) {
       val candidates = root.findAccessibilityNodeInfosByViewId(resourceId)
+      if (resourceIdOccurrence != null && resourceIdOccurrence >= 0 && resourceIdOccurrence < candidates.size) {
+        val candidate = candidates[resourceIdOccurrence]
+        if (selectorMatches(candidate, text, contentDescription)) return candidate
+      }
+      if (preferLastDuplicate && candidates.size > 1) {
+        candidates.asReversed().firstOrNull { selectorMatches(it, text, contentDescription) }?.let { return it }
+      }
       if (!text.isNullOrBlank() || !contentDescription.isNullOrBlank()) {
         candidates.firstOrNull { selectorMatches(it, text, contentDescription) }?.let { return it }
       }
@@ -307,6 +332,23 @@ class LearningWatcherService : AccessibilityService() {
     // content descriptions, or the semantic class. Walk the current tree instead of replaying
     // stale coordinates.
     return findSemanticFallback(root, text, contentDescription)
+  }
+  private fun resourceOccurrenceIndex(root: AccessibilityNodeInfo, target: AccessibilityNodeInfo, resourceId: String): Int? {
+    val candidates = root.findAccessibilityNodeInfosByViewId(resourceId)
+    if (candidates.size <= 1) return null
+    for ((index, candidate) in candidates.withIndex()) {
+      if (sameNode(candidate, target)) return index
+    }
+    return null
+  }
+  private fun sameNode(a: AccessibilityNodeInfo, b: AccessibilityNodeInfo): Boolean {
+    val aBounds = Rect()
+    val bBounds = Rect()
+    a.getBoundsInScreen(aBounds)
+    b.getBoundsInScreen(bBounds)
+    return aBounds == bBounds &&
+      a.className?.toString() == b.className?.toString() &&
+      a.viewIdResourceName == b.viewIdResourceName
   }
   private fun findSemanticFallback(node: AccessibilityNodeInfo, text: String?, contentDescription: String?): AccessibilityNodeInfo? {
     val wanted = text?.trim()?.lowercase()

@@ -6,6 +6,7 @@ export type LearningAction = {
   text?: string;
   contentDescription?: string;
   resourceId?: string;
+  resourceIdOccurrence?: string | number;
   fieldKey?: string;
   action?: string;
   value?: string;

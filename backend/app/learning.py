@@ -55,7 +55,7 @@ def _compact_screen(screen: Any) -> Any:
 
 
 def _safe_action_payload(action: dict[str, Any]) -> dict[str, Any]:
-    safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "fieldKey", "action", "value", "screenTitle", "screen", "clickable", "enabled") if key in action}
+    safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "resourceIdOccurrence", "fieldKey", "action", "value", "screenTitle", "screen", "clickable", "enabled") if key in action}
     if "screen" in safe:
         safe["screen"] = _compact_screen(safe["screen"])
     return safe
