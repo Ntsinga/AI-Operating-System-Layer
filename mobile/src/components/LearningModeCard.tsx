@@ -9,21 +9,44 @@ export function LearningModeCard() {
   const [intent, setIntent] = useState(''); const [appQuery, setAppQuery] = useState(''); const [selectedApp, setSelectedApp] = useState<InstalledApp | null>(null); const [apps, setApps] = useState<InstalledApp[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null); const [count, setCount] = useState(0); const [message, setMessage] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => { getAppManager().getInstalledApps().then(setApps).catch(() => setApps([])); return () => { if (timer.current) clearInterval(timer.current); }; }, []);
-  async function drainPendingActions(activeSessionId: string) {
+  const activeSessionId = useRef<string | null>(null);
+  const startInFlight = useRef(false);
+  const stopInFlight = useRef(false);
+  useEffect(() => { getAppManager().getInstalledApps().then(setApps).catch(() => setApps([])); return () => { clearDrainTimer(); }; }, []);
+  function clearDrainTimer() {
+    if (timer.current) clearInterval(timer.current);
+    timer.current = null;
+  }
+  async function drainPendingActions(targetSessionId: string) {
+    if (activeSessionId.current !== targetSessionId) return 0;
     const actions = await drainLearningActions();
+    if (activeSessionId.current !== targetSessionId) return 0;
     for (const action of actions) {
-      await appendLearningAction(activeSessionId, action);
+      await appendLearningAction(targetSessionId, action);
     }
     if (actions.length > 0) setCount((value) => value + actions.length);
     return actions.length;
   }
+  async function drainUntilEmpty(targetSessionId: string) {
+    let total = 0;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const drained = await drainPendingActions(targetSessionId);
+      total += drained;
+      if (drained === 0) break;
+    }
+    return total;
+  }
   async function start() {
-    if (!intent.trim() || !selectedApp) return;
+    if (!intent.trim() || !selectedApp || sessionId || startInFlight.current) return;
+    startInFlight.current = true;
     try {
+      clearDrainTimer();
+      activeSessionId.current = null;
       setCount(0); setMessage(`Preparing to record ${selectedApp.name}...`);
-      await setLearningRecording(true, selectedApp.packageName);
       const session = await startLearningSession(intent.trim(), selectedApp.packageName);
+      activeSessionId.current = session.sessionId;
+      setSessionId(session.sessionId);
+      await setLearningRecording(true, selectedApp.packageName);
       await recordDebugEvents([{
         traceId: session.sessionId,
         flow: 'learning',
@@ -31,45 +54,56 @@ export function LearningModeCard() {
         sessionId: session.sessionId,
         details: { appPackage: selectedApp.packageName, intent: intent.trim() },
       }]).catch(() => undefined);
-      setSessionId(session.sessionId); setMessage(`Recording ${selectedApp.name}. Perform the task, then return here to finish.`);
-      timer.current = setInterval(async () => { await drainPendingActions(session.sessionId); }, 800);
+      setMessage(`Recording ${selectedApp.name}. Perform the task, then return here to finish.`);
+      timer.current = setInterval(async () => {
+        if (activeSessionId.current === session.sessionId) await drainPendingActions(session.sessionId);
+      }, 800);
       await getAppManager().openApplication(selectedApp.packageName);
     } catch (error) {
+      activeSessionId.current = null;
+      setSessionId(null);
       await setLearningRecording(false, undefined).catch(() => undefined);
       setMessage(error instanceof Error ? error.message : 'Could not start teaching. Enable Accessibility and try again.');
       await openAccessibilitySettings().catch(() => undefined);
+    } finally {
+      startInFlight.current = false;
     }
   }
   async function stop() {
-    if (!sessionId) return;
+    const finishingSessionId = activeSessionId.current ?? sessionId;
+    if (!finishingSessionId || stopInFlight.current) return;
+    stopInFlight.current = true;
     try {
-      if (timer.current) clearInterval(timer.current); timer.current = null;
-      const drained = await drainPendingActions(sessionId);
+      clearDrainTimer();
       await setLearningRecording(false, undefined);
-      const result = await completeLearningSession(sessionId);
+      const drained = await drainUntilEmpty(finishingSessionId);
+      const result = await completeLearningSession(finishingSessionId);
       await recordDebugEvents([{
-        traceId: sessionId,
+        traceId: finishingSessionId,
         flow: 'learning',
         event: 'native_recording_disabled',
-        sessionId,
-        details: { actionCount: result.actions.length, appPackage: selectedApp?.packageName },
+        sessionId: finishingSessionId,
+        details: { actionCount: result.actions.length, drained, appPackage: selectedApp?.packageName },
       }]).catch(() => undefined);
       setMessage(`Learned ${result.actions.length} semantic actions. Review it before reuse.`);
+      activeSessionId.current = null;
       setSessionId(null);
       if (drained === 0 && result.actions.length === 0) setMessage('No actions were captured. Enable Accessibility and make sure you perform the task inside the selected app.');
     } catch (error) {
       await setLearningRecording(false, undefined).catch(() => undefined);
-      if (sessionId) {
+      if (finishingSessionId) {
         await recordDebugEvents([{
-          traceId: sessionId,
+          traceId: finishingSessionId,
           flow: 'learning',
           event: 'session_error',
           level: 'error',
-          sessionId,
+          sessionId: finishingSessionId,
           details: { reason: error instanceof Error ? error.message : 'Could not finish teaching.' },
         }]).catch(() => undefined);
       }
       setMessage(error instanceof Error ? error.message : 'Could not finish teaching.');
+    } finally {
+      stopInFlight.current = false;
     }
   }
   const matches = apps.filter((app) => `${app.name} ${app.packageName}`.toLowerCase().includes(appQuery.trim().toLowerCase())).slice(0, 5);

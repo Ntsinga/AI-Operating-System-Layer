@@ -17,6 +17,15 @@ except ImportError:  # pragma: no cover - production requirements install crypto
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.procedural_memory")
 MAX_STEPS_JSON_CHARS = 50000
+STEP_ACTION_PRIORITY = {
+    "text_input": 0,
+    "tap": 1,
+    "long_click": 2,
+    "selection": 3,
+    "screen_transition": 7,
+    "scroll": 8,
+    "observe": 9,
+}
 
 
 def _db():
@@ -82,16 +91,20 @@ def _decode(value: str) -> str:
 def _serialized_steps(steps: list[dict[str, Any]]) -> str:
     compacted = list(steps)
     while len(json.dumps(compacted, default=str, sort_keys=True)) > MAX_STEPS_JSON_CHARS and len(compacted) > 1:
-        removable_index = next(
-            (
-                index
-                for index, step in enumerate(compacted)
-                if step.get("arguments", {}).get("action") in {"observe", "scroll"}
-            ),
-            0,
-        )
-        compacted.pop(removable_index)
+        compacted.pop(_removable_step_index(compacted))
     return json.dumps(compacted, default=str, sort_keys=True)
+
+
+def _removable_step_index(steps: list[dict[str, Any]]) -> int:
+    for removable_type in ("screen_transition", "observe", "scroll"):
+        for index, step in enumerate(steps):
+            if step.get("arguments", {}).get("action") == removable_type:
+                return index
+    priorities = [
+        STEP_ACTION_PRIORITY.get(str(step.get("arguments", {}).get("action") or ""), 5)
+        for step in steps
+    ]
+    return max(range(len(steps)), key=lambda index: priorities[index])
 
 
 def save_procedure(intent: str, history: list[dict[str, Any]], success: bool = True, scope: str = "local", outcome: str = "succeeded", state: str = "approved") -> None:

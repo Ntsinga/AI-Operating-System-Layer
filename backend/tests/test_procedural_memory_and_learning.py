@@ -98,6 +98,33 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["screen"], screen)
         self.assertNotIn("screenshot", result["actions"][0])
 
+    def test_learning_session_uses_append_only_action_rows(self):
+        session = learning.start_session("teach long ride flow", "com.example.ride")
+        learning.append_action(session["sessionId"], {"action": "tap", "text": "Order a SafeBoda", "resourceId": "content"})
+        for index in range(230):
+            learning.append_action(
+                session["sessionId"],
+                {
+                    "action": "screen_transition",
+                    "screenTitle": f"Screen {index}",
+                    "screen": {
+                        "surface": "com.example.ride",
+                        "title": f"Screen {index}",
+                        "visibleTexts": [f"Screen {index}", "Order a SafeBoda"],
+                        "interactiveElements": [{"text": "Order a SafeBoda", "resourceId": "content"}],
+                    },
+                },
+            )
+        learning.append_action(session["sessionId"], {"action": "text_input", "resourceId": "destination", "value": "Acacia Mall"})
+
+        result = learning.complete_session(session["sessionId"])
+
+        self.assertEqual(len(result["actions"]), 232)
+        self.assertEqual(result["actions"][0]["action"], "tap")
+        self.assertEqual(result["actions"][0]["text"], "Order a SafeBoda")
+        self.assertEqual(result["actions"][-1]["action"], "text_input")
+        self.assertEqual(result["actions"][-1]["value"], "Acacia Mall")
+
     def test_draft_requires_explicit_approval(self):
         session = learning.start_session("teach a task")
         learning.append_action(session["sessionId"], {"action": "tap", "resourceId": "confirm"})

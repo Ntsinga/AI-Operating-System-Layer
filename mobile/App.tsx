@@ -48,7 +48,7 @@ export default function App() {
           </View>
         </View>
 
-        <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} /> : <ToolsScreen />}</View>
+        <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} onVoiceCommandConsumed={() => setVoiceCommand(null)} /> : <ToolsScreen />}</View>
 
         <BottomNav active={tab} onChange={setTab} />
       </View>

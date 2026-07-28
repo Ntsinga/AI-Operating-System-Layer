@@ -56,10 +56,13 @@ class LearningWatcherService : AccessibilityService() {
         val snapshot = screenSnapshot(root, surface)
         action.put("screen", snapshot)
         snapshot.optString("title").takeIf { it.isNotBlank() }?.let { action.put("screenTitle", it.take(120)) }
+        if (action.optString("action") == "screen_transition" && shouldSkipDuplicateScreen(surface, snapshot)) return
       }
-      val queue = readRecordedQueue(prefs.getString(QUEUE, "[]"))
-      queue.put(action)
-      prefs.edit().putString(QUEUE, compactQueue(queue)).apply()
+      synchronized(QUEUE_LOCK) {
+        val queue = readRecordedQueue(prefs.getString(QUEUE, "[]"))
+        queue.put(action)
+        prefs.edit().putString(QUEUE, compactQueue(queue)).commit()
+      }
       Log.i("AIOS.Learning", action.toString())
     } catch (err: Exception) {
       Log.e("AIOS.Learning", "Failed to record accessibility event safely", err)
@@ -247,10 +250,30 @@ class LearningWatcherService : AccessibilityService() {
     while (queue.length() > MAX_RECORDED_ACTIONS) queue.remove(0)
     var serialized = queue.toString()
     while (serialized.length > MAX_QUEUE_CHARS && queue.length() > 1) {
-      queue.remove(0)
+      queue.remove(removableQueueIndex(queue))
       serialized = queue.toString()
     }
     return if (serialized.length <= MAX_QUEUE_CHARS) serialized else JSONArray().put(queue.getJSONObject(queue.length() - 1)).toString()
+  }
+
+  private fun removableQueueIndex(queue: JSONArray): Int {
+    for (action in listOf("screen_transition", "observe", "scroll")) {
+      for (index in 0 until queue.length()) {
+        if (queue.optJSONObject(index)?.optString("action") == action) return index
+      }
+    }
+    return 0
+  }
+
+  private fun shouldSkipDuplicateScreen(surface: String, snapshot: JSONObject): Boolean {
+    val title = snapshot.optString("title")
+    val visibleTexts = snapshot.optJSONArray("visibleTexts")
+    val signature = "$surface|$title|${visibleTexts?.toString()?.take(300) ?: ""}"
+    val now = System.currentTimeMillis()
+    if (signature == lastScreenSignature && now - lastScreenRecordedAt < 1200L) return true
+    lastScreenSignature = signature
+    lastScreenRecordedAt = now
+    return false
   }
 
   private fun currentVisibleTexts(): List<String> {
@@ -428,7 +451,10 @@ class LearningWatcherService : AccessibilityService() {
     const val RECORDING = "recording"
     const val QUEUE = "queue"
     const val TARGET_SURFACE = "target_surface"
-    private const val MAX_QUEUE_CHARS = 45000
-    private const val MAX_RECORDED_ACTIONS = 60
+    private const val MAX_QUEUE_CHARS = 200000
+    private const val MAX_RECORDED_ACTIONS = 160
+    val QUEUE_LOCK = Any()
+    @Volatile private var lastScreenSignature: String = ""
+    @Volatile private var lastScreenRecordedAt: Long = 0L
   }
 }

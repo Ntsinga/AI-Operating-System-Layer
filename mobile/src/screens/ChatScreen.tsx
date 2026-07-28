@@ -5,7 +5,7 @@ import { ActivationSetupCard } from '../components/ActivationSetupCard';
 
 // The "Chat" tab: the conversational AI assistant (type/speak a command, confirm
 // tool calls, reply back and forth). WorkflowCard holds all of that logic.
-export function ChatScreen({ voiceCommand }: { voiceCommand?: string | null }) {
+export function ChatScreen({ voiceCommand, onVoiceCommandConsumed }: { voiceCommand?: string | null; onVoiceCommandConsumed?: () => void }) {
   return (
     <ScrollView
       contentContainerStyle={styles.content}
@@ -13,7 +13,7 @@ export function ChatScreen({ voiceCommand }: { voiceCommand?: string | null }) {
       keyboardDismissMode="interactive"
     >
       <ActivationSetupCard />
-      <WorkflowCard initialCommand={voiceCommand} />
+      <WorkflowCard initialCommand={voiceCommand} onInitialCommandConsumed={onVoiceCommandConsumed} />
     </ScrollView>
   );
 }

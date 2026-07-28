@@ -9,6 +9,12 @@ import org.json.JSONObject
 
 class LearningWatcherModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
   override fun getName() = "LearningWatcher"
+  companion object {
+    @Volatile private var replayInProgress = false
+    @Volatile private var lastReplayStartedAt = 0L
+    @Volatile private var lastReplayTarget = ""
+    private const val REPLAY_COOLDOWN_MS = 5000L
+  }
   @ReactMethod fun setRecording(enabled: Boolean, targetSurface: String?, promise: Promise) {
     if (enabled && LearningWatcherService.instance == null) {
       promise.reject("LEARNING_WATCHER_DISABLED", "Enable AI-OS learning watcher in Android Accessibility settings first.")
@@ -24,8 +30,11 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
   }
   @ReactMethod fun drainActions(promise: Promise) {
     val prefs = context.getSharedPreferences(LearningWatcherService.PREFS, android.content.Context.MODE_PRIVATE)
-    val raw = prefs.getString(LearningWatcherService.QUEUE, "[]") ?: "[]"
-    prefs.edit().putString(LearningWatcherService.QUEUE, "[]").apply()
+    val raw = synchronized(LearningWatcherService.QUEUE_LOCK) {
+      val current = prefs.getString(LearningWatcherService.QUEUE, "[]") ?: "[]"
+      prefs.edit().putString(LearningWatcherService.QUEUE, "[]").commit()
+      current
+    }
     val array = try {
       JSONArray(raw)
     } catch (err: JSONException) {
@@ -49,6 +58,18 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     for (key in values.toHashMap().keys) if (!values.isNull(key)) runtimeValues[key] = values.getString(key) ?: ""
     val completionSelector = completion?.toHashMap()?.mapValues { it.value.toString() }
     val packageToOpen = (targetSurface ?: mapped.firstOrNull { !(it["surface"].isNullOrBlank()) }?.get("surface") ?: "").take(200)
+    val now = System.currentTimeMillis()
+    if (replayInProgress) {
+      promise.reject("LEARNING_REPLAY_BUSY", "A learned procedure replay is already running.")
+      return
+    }
+    if (packageToOpen.isNotBlank() && packageToOpen == lastReplayTarget && now - lastReplayStartedAt < REPLAY_COOLDOWN_MS) {
+      promise.reject("LEARNING_REPLAY_COOLDOWN", "Ignoring duplicate replay request for $packageToOpen.")
+      return
+    }
+    replayInProgress = true
+    lastReplayStartedAt = now
+    lastReplayTarget = packageToOpen
     if (packageToOpen.isNotBlank() && packageToOpen != context.packageName) {
       try {
         val launchIntent = context.packageManager.getLaunchIntentForPackage(packageToOpen)
@@ -59,11 +80,16 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         context.startActivity(launchIntent)
       } catch (error: Exception) {
+        replayInProgress = false
         promise.reject("LEARNING_REPLAY_TARGET_OPEN_FAILED", error)
         return
       }
     }
-    promise.resolve(Arguments.makeNativeMap(service.replay(mapped, runtimeValues, completionSelector, packageToOpen)))
+    try {
+      promise.resolve(Arguments.makeNativeMap(service.replay(mapped, runtimeValues, completionSelector, packageToOpen)))
+    } finally {
+      replayInProgress = false
+    }
   }
   private fun JSONObject.toMap(): Map<String, Any?> = keys().asSequence().associateWith { key -> get(key).toReactValue() }
   private fun JSONArray.toList(): List<Any?> = (0 until length()).map { index -> get(index).toReactValue() }

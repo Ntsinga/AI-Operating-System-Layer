@@ -654,36 +654,6 @@ export const listLearnedProceduresTool = {
   execute: () => listLearnedProcedures(),
 } satisfies ToolDefinition<Record<string, never>, unknown>;
 
-function procedureHasRealReplayAction(procedure: { steps: Array<{ arguments?: Record<string, unknown> }> }) {
-  return procedure.steps.some((step) => {
-    const action = String(step.arguments?.action ?? '');
-    return action === 'tap' || action === 'text_input';
-  });
-}
-
-function replayProcedureScore(procedure: { steps: Array<{ arguments?: Record<string, unknown> }> }) {
-  const actions = procedure.steps.map((step) => String(step.arguments?.action ?? ''));
-  const tapCount = actions.filter((action) => action === 'tap').length;
-  const textCount = actions.filter((action) => action === 'text_input').length;
-  const transitionCount = actions.filter((action) => action === 'screen_transition').length;
-  const firstTextIndex = actions.findIndex((action) => action === 'text_input');
-  const tapsBeforeTyping = firstTextIndex >= 0
-    ? actions.slice(0, firstTextIndex).filter((action) => action === 'tap').length
-    : tapCount;
-  const actionableCount = tapCount + textCount;
-  return tapsBeforeTyping * 1000 + tapCount * 100 + transitionCount * 35 + actionableCount * 10 + Math.min(procedure.steps.length, 9);
-}
-
-function chooseReplayProcedure<T extends { id: number; scope: string; state: string; steps: Array<{ arguments?: Record<string, unknown> }> }>(selected: T, procedures: T[]) {
-  if (procedureHasRealReplayAction(selected)) return selected;
-  const candidates = procedures
-    .filter((candidate) => candidate.state === 'approved' && candidate.scope === selected.scope && procedureHasRealReplayAction(candidate))
-    .sort((left, right) => {
-      return replayProcedureScore(right) - replayProcedureScore(left) || right.id - left.id;
-    });
-  return candidates[0] ?? selected;
-}
-
 export const replayLearnedProcedureTool = {
   name: 'replay_learned_procedure',
   description: 'Replays an approved learned phone-use procedure through AccessibilityService. Provide one-time runtimeValues for fields that must be typed, such as pickup and destination. For ride-hailing, call get_current_location first when pickup is "here" and pass that location as the pickup runtime value. Never use this for booking, payment, or final submission without a separate user confirmation.',
@@ -702,7 +672,7 @@ export const replayLearnedProcedureTool = {
     const selectedProcedure = procedures.find((candidate) => candidate.id === input.procedureId);
     if (!selectedProcedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
     if (selectedProcedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
-    const procedure = chooseReplayProcedure(selectedProcedure, procedures);
+    const procedure = selectedProcedure;
     await recordDebugEvents([{
       traceId,
       flow: 'replay',
@@ -712,12 +682,12 @@ export const replayLearnedProcedureTool = {
       details: {
         requestedProcedureId: selectedProcedure.id,
         selectedProcedureId: procedure.id,
-        fallbackUsed: procedure.id !== selectedProcedure.id,
+        fallbackUsed: false,
         requestedIntent: selectedProcedure.intent,
         selectedIntent: procedure.intent,
         requestedActions: selectedProcedure.steps.map((step) => String(step.arguments?.action ?? '')),
         selectedActions: procedure.steps.map((step) => String(step.arguments?.action ?? '')),
-        reason: procedure.id === selectedProcedure.id ? 'selected_procedure_is_replayable' : 'selected_a_more_navigable_procedure_for_same_app',
+        reason: 'exact_requested_procedure',
       },
     }]).catch(() => undefined);
     const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;

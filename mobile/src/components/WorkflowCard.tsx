@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import {
@@ -17,7 +17,7 @@ import { VoiceInputButton } from './VoiceInputButton';
 
 type Phase = 'idle' | 'starting' | 'awaiting_confirmation' | 'awaiting_reply' | 'running' | 'done';
 
-export function WorkflowCard({ initialCommand }: { initialCommand?: string | null }) {
+export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { initialCommand?: string | null; onInitialCommandConsumed?: () => void }) {
   const [command, setCommand] = useState('');
   const [replyText, setReplyText] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
@@ -29,6 +29,7 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
   const [error, setError] = useState<string | null>(null);
   const [transcribedNotice, setTranscribedNotice] = useState<string | null>(null);
   const [reusedProcedureCount, setReusedProcedureCount] = useState(0);
+  const lastAutoStartedCommand = useRef<string | null>(null);
 
   function handleTranscribed(text: string) {
     setError(null);
@@ -101,10 +102,13 @@ export function WorkflowCard({ initialCommand }: { initialCommand?: string | nul
   }
 
   useEffect(() => {
-    if (initialCommand?.trim()) {
-      void handleStart(initialCommand);
+    const normalized = initialCommand?.trim();
+    if (normalized && normalized !== lastAutoStartedCommand.current) {
+      lastAutoStartedCommand.current = normalized;
+      onInitialCommandConsumed?.();
+      void handleStart(normalized);
     }
-  }, [initialCommand]);
+  }, [initialCommand, onInitialCommandConsumed]);
 
   async function executeProposal(proposalToRun: ProposedToolCall, workflowThreadId: string) {
     if (!proposalToRun || !workflowThreadId) {
