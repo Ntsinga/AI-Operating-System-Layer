@@ -24,14 +24,13 @@ function replayProcedureScore(procedure: Procedure) {
 }
 
 function chooseReplayProcedure(selected: Procedure, procedures: Procedure[]) {
+  if (hasRealReplayAction(selected)) return selected;
   const candidates = procedures
     .filter((candidate) => candidate.state === 'approved' && candidate.scope === selected.scope && hasRealReplayAction(candidate))
     .sort((left, right) => {
       return replayProcedureScore(right) - replayProcedureScore(left) || right.id - left.id;
     });
-  if (!hasRealReplayAction(selected)) return candidates[0] ?? selected;
-  const best = candidates[0];
-  return best && replayProcedureScore(best) > replayProcedureScore(selected) ? best : selected;
+  return candidates[0] ?? selected;
 }
 
 export function LearnedProceduresCard() {

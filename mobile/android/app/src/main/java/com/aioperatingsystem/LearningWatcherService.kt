@@ -125,7 +125,7 @@ class LearningWatcherService : AccessibilityService() {
       if (type == "text_input") {
         val key = action["resourceId"] ?: action["fieldKey"] ?: action["text"] ?: action["contentDescription"]
         val value = key?.let { values[it] } ?: action["value"]
-        val node = waitForNode(action["resourceId"], action["text"], action["contentDescription"], 4500)
+        val node = waitForNode(action["resourceId"] ?: action["fieldKey"], null, action["contentDescription"], 4500)
         addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
         if (node == null) {
           skipped++
@@ -272,8 +272,14 @@ class LearningWatcherService : AccessibilityService() {
     }
   }
   private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?, contentDescription: String?): AccessibilityNodeInfo? {
-    if (!resourceId.isNullOrBlank()) root.findAccessibilityNodeInfosByViewId(resourceId).firstOrNull()?.let { return it }
-    if (!text.isNullOrBlank()) root.findAccessibilityNodeInfosByText(text).firstOrNull()?.let { return it }
+    if (!resourceId.isNullOrBlank()) {
+      val candidates = root.findAccessibilityNodeInfosByViewId(resourceId)
+      if (!text.isNullOrBlank() || !contentDescription.isNullOrBlank()) {
+        candidates.firstOrNull { selectorMatches(it, text, contentDescription) }?.let { return it }
+      }
+      candidates.firstOrNull()?.let { return it }
+    }
+    if (!text.isNullOrBlank()) root.findAccessibilityNodeInfosByText(text).firstOrNull { selectorMatches(it, text, contentDescription) }?.let { return it }
     // Adaptive fallback: app updates often change resource IDs but preserve visible labels,
     // content descriptions, or the semantic class. Walk the current tree instead of replaying
     // stale coordinates.
@@ -294,6 +300,15 @@ class LearningWatcherService : AccessibilityService() {
       }
     }
     return null
+  }
+  private fun selectorMatches(node: AccessibilityNodeInfo, text: String?, contentDescription: String?): Boolean {
+    val wanted = text?.trim()?.lowercase()
+    val wantedDescription = contentDescription?.trim()?.lowercase()
+    val label = readableLabel(node)?.trim()?.lowercase()
+    val description = node.contentDescription?.toString()?.trim()?.lowercase()
+    val textMatches = wanted.isNullOrBlank() || label == wanted || description == wanted
+    val descriptionMatches = wantedDescription.isNullOrBlank() || description == wantedDescription || label == wantedDescription
+    return textMatches && descriptionMatches
   }
   private fun performClick(node: AccessibilityNodeInfo): Boolean {
     actionableClickNode(node)?.let { target ->
