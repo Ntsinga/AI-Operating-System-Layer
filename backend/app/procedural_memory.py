@@ -18,14 +18,16 @@ DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.procedural_memory")
 MAX_STEPS_JSON_CHARS = 50000
 STEP_ACTION_PRIORITY = {
-    "text_input": 0,
-    "tap": 1,
-    "long_click": 2,
-    "selection": 3,
+    "tap": 0,
+    "focus": 0,
+    "selection": 0,
+    "long_click": 0,
+    "text_input": 1,
     "screen_transition": 7,
     "scroll": 8,
     "observe": 9,
 }
+ACTIONABLE_TYPES = {"tap", "focus", "text_input", "long_click", "selection", "scroll"}
 
 
 def _db():
@@ -89,10 +91,81 @@ def _decode(value: str) -> str:
 
 
 def _serialized_steps(steps: list[dict[str, Any]]) -> str:
-    compacted = list(steps)
+    compacted = _normalize_steps_for_storage(steps)
     while len(json.dumps(compacted, default=str, sort_keys=True)) > MAX_STEPS_JSON_CHARS and len(compacted) > 1:
         compacted.pop(_removable_step_index(compacted))
     return json.dumps(compacted, default=str, sort_keys=True)
+
+
+def _compact_step_context(step: dict[str, Any]) -> dict[str, Any]:
+    """Keep selector identity while trimming bulky screen snapshots.
+
+    The replay layer needs the action selector and a small amount of surrounding
+    context. It does not need every visible string on every recorded frame.
+    """
+    normalized = dict(step)
+    args = dict(normalized.get("arguments") or {})
+    screen = args.get("screen")
+    if isinstance(screen, dict):
+        visible = screen.get("visibleTexts")
+        interactive = screen.get("interactiveElements")
+        args["screen"] = {
+            key: value
+            for key, value in {
+                "surface": screen.get("surface"),
+                "role": screen.get("role"),
+                "title": screen.get("title"),
+                "visibleTexts": visible[:8] if isinstance(visible, list) else visible,
+                "interactiveElements": interactive[:8] if isinstance(interactive, list) else interactive,
+            }.items()
+            if value is not None
+        }
+    normalized["arguments"] = args
+    return normalized
+
+
+def _same_text_target(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    a_args = a.get("arguments") or {}
+    b_args = b.get("arguments") or {}
+    a_target = a_args.get("resourceId") or a_args.get("fieldKey") or a_args.get("contentDescription")
+    b_target = b_args.get("resourceId") or b_args.get("fieldKey") or b_args.get("contentDescription")
+    if a_target and b_target and a_target == b_target:
+        return str(a_args.get("resourceIdOccurrence") or "") == str(b_args.get("resourceIdOccurrence") or "")
+    return False
+
+
+def _normalize_steps_for_storage(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preserve workflow structure before compressing noisy text/screen events.
+
+    Android emits many text_input events while a person types. Replaying every
+    prefix is wasteful, but dropping the tap/focus/navigation around those
+    events makes the procedure unusable. Keep all navigation/action steps and
+    only the final text value for each uninterrupted field-edit run.
+    """
+    normalized: list[dict[str, Any]] = []
+    pending_text: dict[str, Any] | None = None
+
+    def flush_pending_text() -> None:
+        nonlocal pending_text
+        if pending_text is not None:
+            normalized.append(_compact_step_context(pending_text))
+            pending_text = None
+
+    for step in steps:
+        action = str((step.get("arguments") or {}).get("action") or "")
+        if action == "text_input":
+            if pending_text is not None and _same_text_target(pending_text, step):
+                pending_text = step
+            else:
+                flush_pending_text()
+                pending_text = step
+            continue
+
+        flush_pending_text()
+        normalized.append(_compact_step_context(step))
+
+    flush_pending_text()
+    return normalized
 
 
 def _removable_step_index(steps: list[dict[str, Any]]) -> int:
@@ -174,7 +247,24 @@ def delete_procedure(procedure_id: int) -> bool:
 
 def approve_procedure(procedure_id: int) -> bool:
     with _connection() as connection:
+        row = execute(connection, "SELECT steps_json FROM procedures WHERE id = ?", (procedure_id,)).fetchone()
+        if not row:
+            logger.info("procedure_approve id=%s approved=false reason=missing", procedure_id)
+            return False
+        steps = json.loads(_decode(row[0]))
+        if _starts_with_text_input(steps):
+            logger.info("procedure_approve id=%s approved=false reason=starts_with_text_input", procedure_id)
+            return False
         cursor = execute(connection, "UPDATE procedures SET state = 'approved' WHERE id = ?", (procedure_id,))
         approved = cursor.rowcount > 0
         logger.info("procedure_approve id=%s approved=%s", procedure_id, approved)
         return approved
+
+
+def _starts_with_text_input(steps: list[dict[str, Any]]) -> bool:
+    for step in steps:
+        action = str((step.get("arguments") or {}).get("action") or "")
+        if action in ("observe", "screen_transition", "scroll"):
+            continue
+        return action == "text_input"
+    return False
