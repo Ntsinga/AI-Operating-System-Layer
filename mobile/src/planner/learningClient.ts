@@ -48,6 +48,10 @@ export function appendLearningAction(sessionId: string, action: LearningAction) 
   return request(`/learning/sessions/${sessionId}/actions`, 'POST', { action });
 }
 
+export function appendLearningActionsBatch(sessionId: string, actions: LearningAction[]) {
+  return request(`/learning/sessions/${sessionId}/actions/batch`, 'POST', { actions });
+}
+
 export function completeLearningSession(sessionId: string) {
   return request(`/learning/sessions/${sessionId}/complete`, 'POST');
 }

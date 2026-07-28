@@ -40,9 +40,43 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     } catch (err: JSONException) {
       JSONArray()
     }
+    val counts = mutableMapOf<String, Int>()
+    for (index in 0 until array.length()) {
+      val type = array.optJSONObject(index)?.optString("action")?.takeIf { it.isNotBlank() } ?: "unknown"
+      counts[type] = (counts[type] ?: 0) + 1
+    }
+    android.util.Log.i("AIOS.Learning", JSONObject(mapOf("event" to "queue_drained", "count" to array.length(), "counts" to counts)).toString())
     val result = Arguments.createArray()
     for (index in 0 until array.length()) result.pushMap(Arguments.makeNativeMap(array.getJSONObject(index).toMap()))
     promise.resolve(result)
+  }
+  @ReactMethod fun peekActions(promise: Promise) {
+    val prefs = context.getSharedPreferences(LearningWatcherService.PREFS, android.content.Context.MODE_PRIVATE)
+    val raw = synchronized(LearningWatcherService.QUEUE_LOCK) {
+      prefs.getString(LearningWatcherService.QUEUE, "[]") ?: "[]"
+    }
+    val array = try {
+      JSONArray(raw)
+    } catch (err: JSONException) {
+      JSONArray()
+    }
+    val counts = mutableMapOf<String, Int>()
+    for (index in 0 until array.length()) {
+      val type = array.optJSONObject(index)?.optString("action")?.takeIf { it.isNotBlank() } ?: "unknown"
+      counts[type] = (counts[type] ?: 0) + 1
+    }
+    android.util.Log.i("AIOS.Learning", JSONObject(mapOf("event" to "queue_peeked", "count" to array.length(), "counts" to counts)).toString())
+    val result = Arguments.createArray()
+    for (index in 0 until array.length()) result.pushMap(Arguments.makeNativeMap(array.getJSONObject(index).toMap()))
+    promise.resolve(result)
+  }
+  @ReactMethod fun clearActions(promise: Promise) {
+    val prefs = context.getSharedPreferences(LearningWatcherService.PREFS, android.content.Context.MODE_PRIVATE)
+    synchronized(LearningWatcherService.QUEUE_LOCK) {
+      prefs.edit().putString(LearningWatcherService.QUEUE, "[]").commit()
+    }
+    android.util.Log.i("AIOS.Learning", JSONObject(mapOf("event" to "queue_cleared")).toString())
+    promise.resolve(null)
   }
   @ReactMethod fun replayActions(actions: ReadableArray, values: ReadableMap, completion: ReadableMap?, targetSurface: String?, promise: Promise) {
     val service = LearningWatcherService.instance

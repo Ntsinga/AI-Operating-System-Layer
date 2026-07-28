@@ -3,6 +3,8 @@ import { Linking, NativeModules } from 'react-native';
 type LearningWatcherModule = {
   setRecording: (enabled: boolean, targetSurface?: string) => Promise<void>;
   drainActions: () => Promise<Array<Record<string, unknown>>>;
+  peekActions: () => Promise<Array<Record<string, unknown>>>;
+  clearActions: () => Promise<void>;
   replayActions: (actions: Array<Record<string, unknown>>, values: Record<string, string>, completion?: Record<string, string>, targetSurface?: string) => Promise<{ executed: number; skipped: number; verified: number; trace?: Array<Record<string, unknown>> }>;
 };
 
@@ -20,6 +22,16 @@ export function setLearningRecording(enabled: boolean, targetSurface?: string) {
 export function drainLearningActions() {
   if (!native) return Promise.resolve([]);
   return native.drainActions();
+}
+
+export function peekLearningActions() {
+  if (!native) return Promise.resolve([]);
+  return native.peekActions();
+}
+
+export function clearLearningActions() {
+  if (!native) return Promise.resolve();
+  return native.clearActions();
 }
 
 export function replayLearningActions(actions: Array<Record<string, unknown>>, values: Record<string, string>, completion?: Record<string, string>, targetSurface?: string) {

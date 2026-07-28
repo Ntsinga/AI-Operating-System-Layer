@@ -100,7 +100,7 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
 
     def test_learning_session_uses_append_only_action_rows(self):
         session = learning.start_session("teach long ride flow", "com.example.ride")
-        learning.append_action(session["sessionId"], {"action": "tap", "text": "Order a SafeBoda", "resourceId": "content"})
+        learning.append_actions(session["sessionId"], [{"action": "tap", "text": "Order a SafeBoda", "resourceId": "content"}])
         for index in range(230):
             learning.append_action(
                 session["sessionId"],
@@ -124,6 +124,32 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["text"], "Order a SafeBoda")
         self.assertEqual(result["actions"][-1]["action"], "text_input")
         self.assertEqual(result["actions"][-1]["value"], "Acacia Mall")
+
+    def test_learning_session_batch_appends_actions_atomically(self):
+        session = learning.start_session("teach ride batch", "com.example.ride")
+        result = learning.append_actions(
+            session["sessionId"],
+            [
+                {"action": "tap", "text": "Order a SafeBoda"},
+                {"action": "text_input", "resourceId": "destination", "value": "Kololo"},
+                {"action": "tap", "text": "Kololo"},
+            ],
+        )
+
+        self.assertEqual(result["appended"], 3)
+        self.assertEqual(result["actionCount"], 3)
+        completed = learning.complete_session(session["sessionId"])
+        self.assertEqual([action["action"] for action in completed["actions"]], ["tap", "text_input", "tap"])
+
+    def test_learning_session_rejects_screen_only_recordings(self):
+        session = learning.start_session("teach broken ride flow", "com.example.ride")
+        learning.append_action(session["sessionId"], {"action": "screen_transition", "screenTitle": "Home"})
+        learning.append_action(session["sessionId"], {"action": "screen_transition", "screenTitle": "Wallet"})
+
+        with self.assertRaisesRegex(ValueError, "No actionable"):
+            learning.complete_session(session["sessionId"])
+
+        self.assertEqual(procedural_memory.list_procedures(), [])
 
     def test_draft_requires_explicit_approval(self):
         session = learning.start_session("teach a task")

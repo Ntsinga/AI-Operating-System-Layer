@@ -21,7 +21,7 @@ from app.expenses import monthly_finances  # noqa: E402
 from app.receipt import extract_receipt  # noqa: E402
 from app.sms_finances import sms_finances  # noqa: E402
 from app.procedural_memory import approve_procedure, delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
-from app.learning import append_action, complete_session, start_session  # noqa: E402
+from app.learning import append_action, append_actions, complete_session, start_session  # noqa: E402
 from app.debug_events import list_events, record_events  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
@@ -46,6 +46,10 @@ class LearningActionRequest(BaseModel):
     action: dict[str, Any]
 
 
+class LearningActionsBatchRequest(BaseModel):
+    actions: list[dict[str, Any]]
+
+
 class DebugEventsRequest(BaseModel):
     events: list[dict[str, Any]]
 
@@ -59,6 +63,16 @@ def learning_start(req: LearningSessionRequest) -> dict[str, Any]:
 def learning_action(session_id: str, req: LearningActionRequest) -> dict[str, Any]:
     try:
         return append_action(session_id, req.action)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+    except ValueError as error:
+        raise HTTPException(409, str(error))
+
+
+@app.post("/learning/sessions/{session_id}/actions/batch")
+def learning_actions_batch(session_id: str, req: LearningActionsBatchRequest) -> dict[str, Any]:
+    try:
+        return append_actions(session_id, req.actions[:500])
     except KeyError as error:
         raise HTTPException(404, str(error))
     except ValueError as error:

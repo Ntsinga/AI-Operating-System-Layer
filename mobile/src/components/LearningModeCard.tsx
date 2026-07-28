@@ -1,46 +1,41 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { appendLearningAction, completeLearningSession, startLearningSession, recordDebugEvents } from '../planner/learningClient';
-import { drainLearningActions, openAccessibilitySettings, setLearningRecording } from '../native/LearningWatcher';
+import { appendLearningActionsBatch, completeLearningSession, startLearningSession, recordDebugEvents } from '../planner/learningClient';
+import { clearLearningActions, openAccessibilitySettings, peekLearningActions, setLearningRecording } from '../native/LearningWatcher';
 import { getAppManager, type InstalledApp } from '../native/AppManager';
 import { colors } from '../theme';
 
 export function LearningModeCard() {
   const [intent, setIntent] = useState(''); const [appQuery, setAppQuery] = useState(''); const [selectedApp, setSelectedApp] = useState<InstalledApp | null>(null); const [apps, setApps] = useState<InstalledApp[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null); const [count, setCount] = useState(0); const [message, setMessage] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeSessionId = useRef<string | null>(null);
   const startInFlight = useRef(false);
   const stopInFlight = useRef(false);
-  useEffect(() => { getAppManager().getInstalledApps().then(setApps).catch(() => setApps([])); return () => { clearDrainTimer(); }; }, []);
-  function clearDrainTimer() {
-    if (timer.current) clearInterval(timer.current);
-    timer.current = null;
-  }
-  async function drainPendingActions(targetSessionId: string) {
-    if (activeSessionId.current !== targetSessionId) return 0;
-    const actions = await drainLearningActions();
-    if (activeSessionId.current !== targetSessionId) return 0;
+  useEffect(() => { getAppManager().getInstalledApps().then(setApps).catch(() => setApps([])); }, []);
+  function summarizeDrainedActions(actions: Array<Record<string, unknown>>) {
+    const counts: Record<string, number> = {};
     for (const action of actions) {
-      await appendLearningAction(targetSessionId, action);
+      const type = String(action.action || 'unknown');
+      counts[type] = (counts[type] || 0) + 1;
     }
-    if (actions.length > 0) setCount((value) => value + actions.length);
-    return actions.length;
+    return { count: actions.length, counts };
   }
-  async function drainUntilEmpty(targetSessionId: string) {
-    let total = 0;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const drained = await drainPendingActions(targetSessionId);
-      total += drained;
-      if (drained === 0) break;
+  async function saveQueuedActions(targetSessionId: string) {
+    if (activeSessionId.current !== targetSessionId) return { total: 0, counts: {} as Record<string, number> };
+    const actions = await peekLearningActions();
+    if (activeSessionId.current !== targetSessionId) return { total: 0, counts: {} as Record<string, number> };
+    const summary = summarizeDrainedActions(actions);
+    if (actions.length > 0) {
+      await appendLearningActionsBatch(targetSessionId, actions);
+      await clearLearningActions();
+      setCount((value) => value + actions.length);
     }
-    return total;
+    return { total: actions.length, counts: summary.counts };
   }
   async function start() {
     if (!intent.trim() || !selectedApp || sessionId || startInFlight.current) return;
     startInFlight.current = true;
     try {
-      clearDrainTimer();
       activeSessionId.current = null;
       setCount(0); setMessage(`Preparing to record ${selectedApp.name}...`);
       const session = await startLearningSession(intent.trim(), selectedApp.packageName);
@@ -55,9 +50,6 @@ export function LearningModeCard() {
         details: { appPackage: selectedApp.packageName, intent: intent.trim() },
       }]).catch(() => undefined);
       setMessage(`Recording ${selectedApp.name}. Perform the task, then return here to finish.`);
-      timer.current = setInterval(async () => {
-        if (activeSessionId.current === session.sessionId) await drainPendingActions(session.sessionId);
-      }, 800);
       await getAppManager().openApplication(selectedApp.packageName);
     } catch (error) {
       activeSessionId.current = null;
@@ -74,16 +66,27 @@ export function LearningModeCard() {
     if (!finishingSessionId || stopInFlight.current) return;
     stopInFlight.current = true;
     try {
-      clearDrainTimer();
+      setMessage('Finishing teaching. Saving captured actions...');
+      const beforeDisable = await saveQueuedActions(finishingSessionId);
       await setLearningRecording(false, undefined);
-      const drained = await drainUntilEmpty(finishingSessionId);
+      const afterDisable = await saveQueuedActions(finishingSessionId);
+      const drained = beforeDisable.total + afterDisable.total;
+      const drainedCounts = { ...beforeDisable.counts };
+      for (const [type, countForType] of Object.entries(afterDisable.counts)) drainedCounts[type] = (drainedCounts[type] || 0) + countForType;
+      await recordDebugEvents([{
+        traceId: finishingSessionId,
+        flow: 'learning',
+        event: 'native_queue_drained',
+        sessionId: finishingSessionId,
+        details: { beforeDisable, afterDisable, total: drained, counts: drainedCounts, appPackage: selectedApp?.packageName },
+      }]).catch(() => undefined);
       const result = await completeLearningSession(finishingSessionId);
       await recordDebugEvents([{
         traceId: finishingSessionId,
         flow: 'learning',
         event: 'native_recording_disabled',
         sessionId: finishingSessionId,
-        details: { actionCount: result.actions.length, drained, appPackage: selectedApp?.packageName },
+        details: { actionCount: result.actions.length, drained, counts: drainedCounts, appPackage: selectedApp?.packageName },
       }]).catch(() => undefined);
       setMessage(`Learned ${result.actions.length} semantic actions. Review it before reuse.`);
       activeSessionId.current = null;

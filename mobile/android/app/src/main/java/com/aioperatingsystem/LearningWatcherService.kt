@@ -408,19 +408,19 @@ class LearningWatcherService : AccessibilityService() {
   }
   private fun collectScreenSemantics(node: AccessibilityNodeInfo, visibleTexts: JSONArray, interactiveElements: JSONArray) {
     val label = if (isSensitiveTextNode(node)) null else readableLabel(node)
-    if (!label.isNullOrBlank() && visibleTexts.length() < 25 && !containsString(visibleTexts, label)) {
-      visibleTexts.put(label.take(120))
+    if (!label.isNullOrBlank() && visibleTexts.length() < MAX_SCREEN_VISIBLE_TEXTS && !containsString(visibleTexts, label)) {
+      visibleTexts.put(label.take(MAX_TEXT_CHARS))
     }
-    if ((node.isClickable || node.isEditable || node.isScrollable) && interactiveElements.length() < 30) {
+    if ((node.isClickable || node.isEditable || node.isScrollable) && interactiveElements.length() < MAX_SCREEN_ELEMENTS) {
       val element = JSONObject()
         .put("role", node.className?.toString() ?: "")
         .put("clickable", node.isClickable)
         .put("editable", node.isEditable)
         .put("scrollable", node.isScrollable)
         .put("enabled", node.isEnabled)
-      node.viewIdResourceName?.take(160)?.let { element.put("resourceId", it) }
-      if (!label.isNullOrBlank()) element.put("text", label.take(120))
-      node.contentDescription?.toString()?.take(120)?.let { element.put("contentDescription", it) }
+      node.viewIdResourceName?.take(MAX_ID_CHARS)?.let { element.put("resourceId", it) }
+      if (!label.isNullOrBlank()) element.put("text", label.take(MAX_TEXT_CHARS))
+      node.contentDescription?.toString()?.take(MAX_TEXT_CHARS)?.let { element.put("contentDescription", it) }
       interactiveElements.put(element)
     }
     for (index in 0 until node.childCount) {
@@ -428,7 +428,7 @@ class LearningWatcherService : AccessibilityService() {
         collectScreenSemantics(child, visibleTexts, interactiveElements)
         child.recycle()
       }
-      if (visibleTexts.length() >= 25 && interactiveElements.length() >= 30) return
+      if (visibleTexts.length() >= MAX_SCREEN_VISIBLE_TEXTS && interactiveElements.length() >= MAX_SCREEN_ELEMENTS) return
     }
   }
   private fun containsString(array: JSONArray, value: String): Boolean {
@@ -451,8 +451,12 @@ class LearningWatcherService : AccessibilityService() {
     const val RECORDING = "recording"
     const val QUEUE = "queue"
     const val TARGET_SURFACE = "target_surface"
-    private const val MAX_QUEUE_CHARS = 200000
-    private const val MAX_RECORDED_ACTIONS = 160
+    private const val MAX_QUEUE_CHARS = 400000
+    private const val MAX_RECORDED_ACTIONS = 240
+    private const val MAX_SCREEN_VISIBLE_TEXTS = 16
+    private const val MAX_SCREEN_ELEMENTS = 14
+    private const val MAX_TEXT_CHARS = 90
+    private const val MAX_ID_CHARS = 140
     val QUEUE_LOCK = Any()
     @Volatile private var lastScreenSignature: String = ""
     @Volatile private var lastScreenRecordedAt: Long = 0L

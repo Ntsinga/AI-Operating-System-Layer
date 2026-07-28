@@ -27,6 +27,7 @@ ACTION_PRIORITY = {
     "scroll": 8,
     "observe": 9,
 }
+ACTIONABLE_ACTIONS = {"tap", "text_input", "long_click", "selection", "scroll"}
 
 
 def _record_learning_event(**kwargs: Any) -> None:
@@ -162,48 +163,79 @@ def _read_session_actions(connection: sqlite3.Connection, session_id: str, fallb
 
 
 def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
+    result = append_actions(session_id, [action])
+    return {
+        "sessionId": session_id,
+        "actionCount": result["actionCount"],
+        "lastAction": result["lastAction"],
+        "status": "recording",
+    }
+
+
+def append_actions(session_id: str, actions_to_append: list[dict[str, Any]]) -> dict[str, Any]:
+    if not actions_to_append:
+        with _connection() as connection:
+            row = execute(connection, "SELECT status FROM learning_sessions WHERE id = ?", (session_id,)).fetchone()
+            if not row:
+                raise KeyError("Learning session was not found.")
+            action_count = execute(connection, "SELECT COUNT(*) FROM learning_actions WHERE session_id = ?", (session_id,)).fetchone()[0]
+        return {"sessionId": session_id, "actionCount": int(action_count), "appended": 0, "lastAction": None, "status": row[0]}
+
     with _connection() as connection:
         row = execute(connection, "SELECT actions_json, status FROM learning_sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             raise KeyError("Learning session was not found.")
         if row[1] != "recording":
             raise ValueError("Learning session is no longer recording.")
-        actions = json.loads(row[0])
-        # Keep semantic selectors and compact screen context; omit screenshots,
-        # passwords, and arbitrary payloads.
-        safe = _safe_action_payload(action)
         next_sequence = execute(connection, "SELECT COALESCE(MAX(sequence), 0) + 1 FROM learning_actions WHERE session_id = ?", (session_id,)).fetchone()[0]
-        execute(
-            connection,
-            "INSERT INTO learning_actions(session_id, sequence, action_json) VALUES (?, ?, ?)",
-            (session_id, int(next_sequence), json.dumps(safe, default=str)),
-        )
+        safe_actions = []
+        for offset, action in enumerate(actions_to_append):
+            # Keep semantic selectors and compact screen context; omit screenshots,
+            # passwords, and arbitrary payloads.
+            safe = _safe_action_payload(action)
+            safe_actions.append(safe)
+            execute(
+                connection,
+                "INSERT INTO learning_actions(session_id, sequence, action_json) VALUES (?, ?, ?)",
+                (session_id, int(next_sequence) + offset, json.dumps(safe, default=str)),
+            )
         summary_actions = _compact_actions(_read_action_rows(connection, session_id, MAX_ACTIONS * 2))
         execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(summary_actions, default=str), session_id))
         action_count = execute(connection, "SELECT COUNT(*) FROM learning_actions WHERE session_id = ?", (session_id,)).fetchone()[0]
-    logger.info("learning_action_appended session=%s action_count=%d action=%s", session_id, action_count, safe.get("action", ""))
+    last_action = safe_actions[-1]
+    logger.info("learning_actions_appended session=%s action_count=%d appended=%d last_action=%s", session_id, action_count, len(safe_actions), last_action.get("action", ""))
     _record_learning_event(
         trace_id=session_id,
         flow="learning",
-        event="action_appended",
+        event="actions_appended" if len(safe_actions) > 1 else "action_appended",
         session_id=session_id,
         step=int(action_count),
         details={
             "actionCount": int(action_count),
-            "action": safe.get("action"),
-            "surface": safe.get("surface"),
-            "role": safe.get("role"),
-            "text": safe.get("text"),
-            "contentDescription": safe.get("contentDescription"),
-            "resourceId": safe.get("resourceId"),
-            "fieldKey": safe.get("fieldKey"),
-            "screenTitle": safe.get("screenTitle"),
-            "clickable": safe.get("clickable"),
-            "enabled": safe.get("enabled"),
-            "screen": safe.get("screen"),
+            "appended": len(safe_actions),
+            "counts": _action_counts(safe_actions),
+            "action": last_action.get("action"),
+            "surface": last_action.get("surface"),
+            "role": last_action.get("role"),
+            "text": last_action.get("text"),
+            "contentDescription": last_action.get("contentDescription"),
+            "resourceId": last_action.get("resourceId"),
+            "fieldKey": last_action.get("fieldKey"),
+            "screenTitle": last_action.get("screenTitle"),
+            "clickable": last_action.get("clickable"),
+            "enabled": last_action.get("enabled"),
+            "screen": last_action.get("screen"),
         },
     )
-    return {"sessionId": session_id, "actionCount": int(action_count), "lastAction": safe, "status": "recording"}
+    return {"sessionId": session_id, "actionCount": int(action_count), "appended": len(safe_actions), "lastAction": last_action, "status": "recording"}
+
+
+def _action_counts(actions: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for action in actions:
+        action_type = str(action.get("action") or "unknown")
+        counts[action_type] = counts.get(action_type, 0) + 1
+    return counts
 
 
 def complete_session(session_id: str) -> dict[str, Any]:
@@ -216,6 +248,22 @@ def complete_session(session_id: str) -> dict[str, Any]:
         actions = _read_session_actions(connection, session_id, row[2])
         if not actions:
             raise ValueError("At least one semantic action is required.")
+        actionable_count = sum(1 for action in actions if str(action.get("action") or "") in ACTIONABLE_ACTIONS)
+        if actionable_count == 0:
+            _record_learning_event(
+                trace_id=session_id,
+                flow="learning",
+                event="session_rejected",
+                level="warn",
+                session_id=session_id,
+                details={
+                    "reason": "no_actionable_actions",
+                    "actionCount": len(actions),
+                    "appPackage": row[1] or None,
+                    "intent": row[0],
+                },
+            )
+            raise ValueError("No actionable taps, typing, selections, or scrolls were captured. Try teaching again and make sure AI-OS Accessibility is enabled before you start.")
         execute(connection, "UPDATE learning_sessions SET status = 'completed' WHERE id = ?", (session_id,))
     from app.procedural_memory import save_procedure
     history = [{"toolName": action.get("action", "ui_action"), "arguments": action} for action in actions]
