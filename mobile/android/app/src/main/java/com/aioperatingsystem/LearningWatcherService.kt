@@ -616,7 +616,7 @@ class LearningWatcherService : AccessibilityService() {
   }
 
   private fun compactQueue(queue: JSONArray): String {
-    while (queue.length() > MAX_RECORDED_ACTIONS) queue.remove(0)
+    while (queue.length() > MAX_RECORDED_ACTIONS) queue.remove(removableQueueIndex(queue))
     var serialized = queue.toString()
     while (serialized.length > MAX_QUEUE_CHARS && queue.length() > 1) {
       queue.remove(removableQueueIndex(queue))
@@ -923,7 +923,7 @@ class LearningWatcherService : AccessibilityService() {
     private const val MAX_RECORDED_ACTIONS = 240
     private const val MAX_SCREEN_VISIBLE_TEXTS = 16
     private const val MAX_SCREEN_ELEMENTS = 14
-    private const val FOCUS_SETTLE_BEFORE_TYPING_MS = 1500L
+    private const val FOCUS_SETTLE_BEFORE_TYPING_MS = 1000L
     private const val GESTURE_TAP_DURATION_MS = 80L
     private const val GESTURE_TAP_WAIT_MS = 800L
     private const val MAX_TEXT_CHARS = 90
