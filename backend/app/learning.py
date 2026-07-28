@@ -20,6 +20,7 @@ MAX_ACTIONS_JSON_CHARS = 120000
 MAX_ACTIONS = 180
 ACTION_PRIORITY = {
     "text_input": 0,
+    "focus": 1,
     "tap": 1,
     "long_click": 2,
     "selection": 3,
@@ -27,7 +28,7 @@ ACTION_PRIORITY = {
     "scroll": 8,
     "observe": 9,
 }
-ACTIONABLE_ACTIONS = {"tap", "text_input", "long_click", "selection", "scroll"}
+ACTIONABLE_ACTIONS = {"tap", "focus", "text_input", "long_click", "selection", "scroll"}
 
 
 def _record_learning_event(**kwargs: Any) -> None:
@@ -55,7 +56,34 @@ def _compact_screen(screen: Any) -> Any:
 
 
 def _safe_action_payload(action: dict[str, Any]) -> dict[str, Any]:
-    safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "resourceIdOccurrence", "fieldKey", "action", "value", "screenTitle", "screen", "clickable", "enabled") if key in action}
+    safe = {
+        key: action.get(key)
+        for key in (
+            "schemaVersion",
+            "surface",
+            "role",
+            "text",
+            "contentDescription",
+            "resourceId",
+            "resourceIdOccurrence",
+            "fieldKey",
+            "action",
+            "value",
+            "screenTitle",
+            "screen",
+            "clickable",
+            "editable",
+            "scrollable",
+            "enabled",
+            "nodeClass",
+            "selectorKind",
+            "bounds",
+            "parentClass",
+            "parentSelectorKind",
+            "parentText",
+        )
+        if key in action
+    }
     if "screen" in safe:
         safe["screen"] = _compact_screen(safe["screen"])
     return safe
@@ -264,6 +292,23 @@ def complete_session(session_id: str) -> dict[str, Any]:
                 },
             )
             raise ValueError("No actionable taps, typing, selections, or scrolls were captured. Try teaching again and make sure AI-OS Accessibility is enabled before you start.")
+        actionable = [action for action in actions if str(action.get("action") or "") in ACTIONABLE_ACTIONS]
+        if actionable and str(actionable[0].get("action") or "") == "text_input":
+            _record_learning_event(
+                trace_id=session_id,
+                flow="learning",
+                event="session_rejected",
+                level="warn",
+                session_id=session_id,
+                details={
+                    "reason": "starts_with_text_input",
+                    "actionCount": len(actions),
+                    "firstAction": actionable[0],
+                    "appPackage": row[1] or None,
+                    "intent": row[0],
+                },
+            )
+            raise ValueError("This teaching starts with typing before any app navigation or field focus was captured. Start teaching before you tap the app control/field, then try again.")
         execute(connection, "UPDATE learning_sessions SET status = 'completed' WHERE id = ?", (session_id,))
     from app.procedural_memory import save_procedure
     history = [{"toolName": action.get("action", "ui_action"), "arguments": action} for action in actions]
