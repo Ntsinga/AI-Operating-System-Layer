@@ -8,6 +8,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $backendRoot = Join-Path $projectRoot 'backend'
 $mobileRoot = Join-Path $projectRoot 'mobile'
 $pythonPath = Join-Path $backendRoot '.venv\Scripts\python.exe'
+$androidPackageName = 'com.aioperatingsystem'
 $legacyAndroidPackages = @(
     'com.ntsinga.mobile',
     'com.ntsinga.aios',
@@ -35,6 +36,38 @@ function Remove-LegacyAndroidPackages {
             if ($installed -match "package:$([regex]::Escape($packageName))") {
                 Write-Host "Removing legacy package $packageName from $device..."
                 & adb -s $device uninstall $packageName | Out-Host
+            }
+        }
+    }
+}
+
+function Get-AndroidUserIds {
+    param([string]$Device)
+
+    $users = & adb -s $Device shell pm list users 2>$null
+    return @($users | ForEach-Object {
+        if ($_ -match 'UserInfo\{(\d+):') { $Matches[1] }
+    })
+}
+
+function Remove-AndroidPackageFromSecondaryUsers {
+    param([string]$PackageName)
+
+    $devices = Get-ConnectedAndroidDevices
+    if ($devices.Count -eq 0) {
+        Write-Host "No connected Android device found for secondary-user cleanup of $PackageName."
+        return
+    }
+
+    foreach ($device in $devices) {
+        $userIds = Get-AndroidUserIds -Device $device
+        foreach ($userId in $userIds) {
+            if ($userId -eq '0') { continue }
+
+            $installed = & adb -s $device shell cmd package list packages --user $userId $PackageName 2>$null
+            if ($installed -match "package:$([regex]::Escape($PackageName))") {
+                Write-Host "Removing $PackageName from secondary Android user $userId on $device..."
+                & adb -s $device shell pm uninstall --user $userId $PackageName | Out-Host
             }
         }
     }
@@ -77,6 +110,7 @@ if ($BuildOnly -or $SkipBuild) {
 }
 
 Remove-LegacyAndroidPackages
+Remove-AndroidPackageFromSecondaryUsers -PackageName $androidPackageName
 
 Push-Location $mobileRoot
 try {
@@ -86,4 +120,6 @@ try {
 } finally {
     Pop-Location
 }
+
+Remove-AndroidPackageFromSecondaryUsers -PackageName $androidPackageName
 

@@ -81,6 +81,7 @@ def _safe_action_payload(action: dict[str, Any]) -> dict[str, Any]:
             "parentClass",
             "parentSelectorKind",
             "parentText",
+            "synthetic",
         )
         if key in action
     }
