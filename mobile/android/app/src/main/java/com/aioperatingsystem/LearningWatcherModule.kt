@@ -42,7 +42,7 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     for (index in 0 until actions.size()) {
       val item = actions.getMap(index) ?: continue
       val map = mutableMapOf<String, String>()
-      for (key in listOf("action", "surface", "role", "text", "resourceId", "contentDescription", "fieldKey", "value")) if (item.hasKey(key) && !item.isNull(key)) map[key] = item.getString(key) ?: ""
+      for (key in listOf("action", "surface", "role", "text", "resourceId", "contentDescription", "fieldKey", "value", "screenTitle")) if (item.hasKey(key) && !item.isNull(key)) map[key] = item.getString(key) ?: ""
       mapped.add(map)
     }
     val runtimeValues = mutableMapOf<String, String>()

@@ -29,6 +29,9 @@ class LearningWatcherService : AccessibilityService() {
           AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
           AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "text_input"
           AccessibilityEvent.TYPE_VIEW_SCROLLED -> "scroll"
+          AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+          AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "screen_transition"
           else -> "observe"
         })
       val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null else event.text?.firstOrNull()?.toString()
@@ -50,7 +53,9 @@ class LearningWatcherService : AccessibilityService() {
         node.recycle()
       }
       rootInActiveWindow?.let { root ->
-        action.put("screen", screenSnapshot(root, surface))
+        val snapshot = screenSnapshot(root, surface)
+        action.put("screen", snapshot)
+        snapshot.optString("title").takeIf { it.isNotBlank() }?.let { action.put("screenTitle", it.take(120)) }
       }
       val queue = readRecordedQueue(prefs.getString(QUEUE, "[]"))
       queue.put(action)
@@ -106,6 +111,15 @@ class LearningWatcherService : AccessibilityService() {
       }
       if (shouldIgnoreReplayAction(action)) {
         addTrace("step_ignored", details = mapOf("reason" to "non_actionable_recording_noise", "visibleTexts" to currentVisibleTexts()))
+        continue
+      }
+      if (type == "screen_transition") {
+        val ready = waitForScreen(action["screenTitle"] ?: action["text"], 3500)
+        if (ready) {
+          addTrace("step_verified", details = mapOf("screenTitle" to (action["screenTitle"] ?: action["text"]), "visibleTexts" to currentVisibleTexts()))
+        } else {
+          addTrace("step_skipped", "warn", mapOf("reason" to "screen_not_observed_after_wait", "screenTitle" to (action["screenTitle"] ?: action["text"]), "visibleTexts" to currentVisibleTexts()))
+        }
         continue
       }
       if (type == "text_input") {
@@ -171,7 +185,7 @@ class LearningWatcherService : AccessibilityService() {
     return mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "trace" to trace)
   }
   private fun selectorDetails(action: Map<String, String>): Map<String, String> =
-    listOf("surface", "resourceId", "text", "contentDescription", "fieldKey").mapNotNull { key ->
+    listOf("surface", "resourceId", "text", "contentDescription", "fieldKey", "screenTitle").mapNotNull { key ->
       action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
     }.toMap()
 
@@ -204,6 +218,17 @@ class LearningWatcherService : AccessibilityService() {
       Thread.sleep(180)
     }
     return null
+  }
+
+  private fun waitForScreen(title: String?, timeoutMs: Long): Boolean {
+    if (title.isNullOrBlank()) return true
+    val wanted = title.trim().lowercase()
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      if (currentVisibleTexts().any { it.trim().lowercase() == wanted || it.trim().lowercase().contains(wanted) }) return true
+      Thread.sleep(180)
+    }
+    return false
   }
 
   private fun currentRootSurface(): String? = rootInActiveWindow?.packageName?.toString()

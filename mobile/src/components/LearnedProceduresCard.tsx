@@ -14,12 +14,13 @@ function replayProcedureScore(procedure: Procedure) {
   const actions = procedure.steps.map((step) => String(step.arguments?.action ?? ''));
   const tapCount = actions.filter((action) => action === 'tap').length;
   const textCount = actions.filter((action) => action === 'text_input').length;
+  const transitionCount = actions.filter((action) => action === 'screen_transition').length;
   const firstTextIndex = actions.findIndex((action) => action === 'text_input');
   const tapsBeforeTyping = firstTextIndex >= 0
     ? actions.slice(0, firstTextIndex).filter((action) => action === 'tap').length
     : tapCount;
   const actionableCount = tapCount + textCount;
-  return tapsBeforeTyping * 1000 + tapCount * 100 + actionableCount * 10 + Math.min(procedure.steps.length, 9);
+  return tapsBeforeTyping * 1000 + tapCount * 100 + transitionCount * 35 + actionableCount * 10 + Math.min(procedure.steps.length, 9);
 }
 
 function chooseReplayProcedure(selected: Procedure, procedures: Procedure[]) {
