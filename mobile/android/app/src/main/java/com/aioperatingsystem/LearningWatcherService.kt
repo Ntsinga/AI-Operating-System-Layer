@@ -6,54 +6,59 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 /** Consent-gated semantic recorder. It stores labels/roles only, never screenshots or passwords. */
 class LearningWatcherService : AccessibilityService() {
   override fun onServiceConnected() { instance = this }
   override fun onAccessibilityEvent(event: AccessibilityEvent) {
-    lastSurface = event.packageName?.toString() ?: lastSurface
-    val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-    if (!prefs.getBoolean(RECORDING, false)) return
-    val surface = event.packageName?.toString() ?: ""
-    val targetSurface = prefs.getString(TARGET_SURFACE, "") ?: ""
-    if (targetSurface.isNotBlank() && surface != targetSurface) return
-    if (targetSurface.isBlank() && (surface == packageName || surface == "com.android.settings")) return
-    val action = JSONObject()
-      .put("schemaVersion", 2)
-      .put("surface", surface)
-      .put("role", event.className?.toString() ?: "")
-      .put("action", when (event.eventType) {
-        AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
-        AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "text_input"
-        AccessibilityEvent.TYPE_VIEW_SCROLLED -> "scroll"
-        else -> "observe"
-      })
-    val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null else event.text?.firstOrNull()?.toString()
-    if (!label.isNullOrBlank()) action.put("text", label.take(120))
-    event.source?.let { node ->
-      node.viewIdResourceName?.take(160)?.let { action.put("resourceId", it) }
-      val nodeLabel = readableLabel(node)
-      if (!nodeLabel.isNullOrBlank() && !action.has("text")) action.put("text", nodeLabel.take(120))
-      node.contentDescription?.toString()?.take(120)?.let { action.put("contentDescription", it) }
-      if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED && !isSensitiveTextNode(node)) {
-        val currentValue = node.text?.toString()?.trim()
-          ?: event.text?.lastOrNull()?.toString()?.trim()
-        if (!currentValue.isNullOrBlank()) action.put("value", currentValue.take(160))
+    try {
+      lastSurface = event.packageName?.toString() ?: lastSurface
+      val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+      if (!prefs.getBoolean(RECORDING, false)) return
+      val surface = event.packageName?.toString() ?: ""
+      val targetSurface = prefs.getString(TARGET_SURFACE, "") ?: ""
+      if (targetSurface.isNotBlank() && surface != targetSurface) return
+      if (targetSurface.isBlank() && (surface == packageName || surface == "com.android.settings")) return
+      val action = JSONObject()
+        .put("schemaVersion", 2)
+        .put("surface", surface)
+        .put("role", event.className?.toString() ?: "")
+        .put("action", when (event.eventType) {
+          AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
+          AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "text_input"
+          AccessibilityEvent.TYPE_VIEW_SCROLLED -> "scroll"
+          else -> "observe"
+        })
+      val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null else event.text?.firstOrNull()?.toString()
+      if (!label.isNullOrBlank()) action.put("text", label.take(120))
+      event.source?.let { node ->
+        node.viewIdResourceName?.take(160)?.let { action.put("resourceId", it) }
+        val nodeLabel = readableLabel(node)
+        if (!nodeLabel.isNullOrBlank() && !action.has("text")) action.put("text", nodeLabel.take(120))
+        node.contentDescription?.toString()?.take(120)?.let { action.put("contentDescription", it) }
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED && !isSensitiveTextNode(node)) {
+          val currentValue = node.text?.toString()?.trim()
+            ?: event.text?.lastOrNull()?.toString()?.trim()
+          if (!currentValue.isNullOrBlank()) action.put("value", currentValue.take(160))
+        }
+        val fieldKey = node.viewIdResourceName ?: node.contentDescription?.toString() ?: nodeLabel
+        if (!fieldKey.isNullOrBlank()) action.put("fieldKey", fieldKey.take(160))
+        action.put("clickable", node.isClickable)
+        action.put("enabled", node.isEnabled)
+        node.recycle()
       }
-      val fieldKey = node.viewIdResourceName ?: node.contentDescription?.toString() ?: nodeLabel
-      if (!fieldKey.isNullOrBlank()) action.put("fieldKey", fieldKey.take(160))
-      action.put("clickable", node.isClickable)
-      action.put("enabled", node.isEnabled)
-      node.recycle()
+      rootInActiveWindow?.let { root ->
+        action.put("screen", screenSnapshot(root, surface))
+      }
+      val queue = readRecordedQueue(prefs.getString(QUEUE, "[]"))
+      queue.put(action)
+      prefs.edit().putString(QUEUE, compactQueue(queue)).apply()
+      Log.i("AIOS.Learning", action.toString())
+    } catch (err: Exception) {
+      Log.e("AIOS.Learning", "Failed to record accessibility event safely", err)
     }
-    rootInActiveWindow?.let { root ->
-      action.put("screen", screenSnapshot(root, surface))
-    }
-    val queue = JSONArray(prefs.getString(QUEUE, "[]"))
-    queue.put(action)
-    prefs.edit().putString(QUEUE, queue.toString().take(50000)).apply()
-    Log.i("AIOS.Learning", action.toString())
   }
   override fun onInterrupt() = Unit
   fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null, requestedSurface: String? = null): Map<String, Any> {
@@ -202,6 +207,26 @@ class LearningWatcherService : AccessibilityService() {
   }
 
   private fun currentRootSurface(): String? = rootInActiveWindow?.packageName?.toString()
+
+  private fun readRecordedQueue(raw: String?): JSONArray {
+    if (raw.isNullOrBlank()) return JSONArray()
+    return try {
+      JSONArray(raw)
+    } catch (err: JSONException) {
+      Log.w("AIOS.Learning", "Discarding corrupt recorded action queue", err)
+      JSONArray()
+    }
+  }
+
+  private fun compactQueue(queue: JSONArray): String {
+    while (queue.length() > MAX_RECORDED_ACTIONS) queue.remove(0)
+    var serialized = queue.toString()
+    while (serialized.length > MAX_QUEUE_CHARS && queue.length() > 1) {
+      queue.remove(0)
+      serialized = queue.toString()
+    }
+    return if (serialized.length <= MAX_QUEUE_CHARS) serialized else JSONArray().put(queue.getJSONObject(queue.length() - 1)).toString()
+  }
 
   private fun currentVisibleTexts(): List<String> {
     val root = rootInActiveWindow ?: return emptyList()
@@ -363,5 +388,7 @@ class LearningWatcherService : AccessibilityService() {
     const val RECORDING = "recording"
     const val QUEUE = "queue"
     const val TARGET_SURFACE = "target_surface"
+    private const val MAX_QUEUE_CHARS = 45000
+    private const val MAX_RECORDED_ACTIONS = 60
   }
 }

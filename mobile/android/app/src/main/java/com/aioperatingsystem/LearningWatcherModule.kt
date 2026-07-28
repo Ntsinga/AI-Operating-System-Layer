@@ -4,6 +4,7 @@ import com.facebook.react.bridge.*
 import android.content.Intent
 import android.provider.Settings
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 class LearningWatcherModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
@@ -25,7 +26,12 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     val prefs = context.getSharedPreferences(LearningWatcherService.PREFS, android.content.Context.MODE_PRIVATE)
     val raw = prefs.getString(LearningWatcherService.QUEUE, "[]") ?: "[]"
     prefs.edit().putString(LearningWatcherService.QUEUE, "[]").apply()
-    val array = JSONArray(raw); val result = Arguments.createArray()
+    val array = try {
+      JSONArray(raw)
+    } catch (err: JSONException) {
+      JSONArray()
+    }
+    val result = Arguments.createArray()
     for (index in 0 until array.length()) result.pushMap(Arguments.makeNativeMap(array.getJSONObject(index).toMap()))
     promise.resolve(result)
   }
