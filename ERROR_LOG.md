@@ -707,3 +707,128 @@ install-time validation requirement rather than something this Windows workspace
 - **Startup hardening**: Sherpa model construction now runs on a single background executor, so
   React renders the AI-OS screen while the model warms up instead of appearing blank or dropping
   frames during first activation.
+
+## 2026-07-28 - Learned procedure replay investigation notes
+
+- **Area**: Phase 5 learned procedure replay, Faras/SafeBoda ride procedures, logcat/database
+  investigation workflow.
+- **Symptom**: A learned ride procedure appeared to keep replaying or making no progress. Replay
+  logs showed it bouncing between the target ride app and AI-OS, then skipping many steps.
+- **Root cause**: The stored procedure was malformed: text-entry recording parsed incremental
+  field text as replay steps (`focus(W)`, `focus(Wa)`, `text_input(Wande)`, etc.) instead of one
+  stable field selector plus one runtime value. Replay treated `focus` and unstable text-delta
+  `text_input` actions as actionable. Notification-permission UI in Faras also interrupted the
+  target surface, so some steps ran while AI-OS or a permission dialog was frontmost.
+- **Fix applied locally**: `mobile/src/tools/registry.ts` and
+  `mobile/src/components/LearnedProceduresCard.tsx` now consider `tap`/`text_input` replayable
+  only when they have a stable selector (`resourceId`, `contentDescription`, or a `fieldKey` that
+  is not just the current text). `LearningWatcherService.kt` now ignores `focus` actions and
+  selectorless/unstable text inputs at native replay time.
+- **Regression guard**: Do not fix malformed text parsing by dropping selector metadata. SafeBoda
+  needs duplicate-field disambiguation: `resourceIdOccurrence` plus nearby parent context such as
+  `parentText` identifies the second pickup/dropoff input when two fields share
+  `com.safeboda.passenger:id/pickUpDropOffInputText`. Native replay must receive and honor these
+  fields before choosing a node by resource ID.
+- **Regression recovered**: A later local edit restored selector metadata but accidentally stayed
+  on the simpler replay path from `main`, dropping prior safeguards from commit `22a2151`
+  (`Preserve replay selectors and recover target app`). The native replay files were restored from
+  that implementation so waits/loading logic came back: `screen_ready_before_text`,
+  `target_ready_before_text`, `focus_settle_before_text`, `waitForReadyNode`,
+  `waitForScreenReady`, gesture-tap focus, front-window obstruction checks, duplicate text-input
+  suppression, incremental typing, replay cooldown, queue locking, and location-suggestion waits.
+  The bridge was then patched to stringify numeric `Dynamic` values as integers where possible so
+  `resourceIdOccurrence` remains usable.
+- **Validation**: `npm exec tsc -- --noEmit` passed after running with filesystem approval.
+  `mobile/android/gradlew.bat :app:compileDebugKotlin --offline` passed after allowing Gradle to
+  access its wrapper/cache. Kotlin emitted only existing `AccessibilityNodeInfo.recycle()`
+  deprecation warnings.
+- **Important DB state**: The local SQLite file `backend/procedural_memory.sqlite3` only had smoke
+  data (`demo ride`, `persistence smoke test`) and no `debug_events` table. The real procedure
+  records were in the configured Postgres database from `backend/.env` (`procedures` had 25 rows,
+  `debug_events` had 2081 rows, `learning_sessions` had 59 rows at investigation time). Use the
+  backend venv Python and `load_dotenv('backend/.env')` for direct DB inspection.
+- **Bad remote procedure examples**: Remote Faras procedures `Ride 22` through `Ride 25`,
+  especially procedure `31` (`Ride 24`) and `32` (`Ride 25`), were approved but dominated by
+  `focus`, repeated partial `text_input`, and `screen_transition` steps. Delete, unapprove, or
+  ignore these when testing until a clean procedure is taught.
+- **2026-07-28 follow-up**: Faras procedure `32` (`Ride 25`) intentionally replayed Faras, but
+  it kept reopening/churning because the stored lesson had no stable replayable selectors:
+  direct DB inspection showed `stable_real []` for Faras procedures `28` through `32`. The bug was
+  not app choice; it was that replay launched an exact malformed lesson instead of rejecting it
+  before opening the target app. `mobile/src/tools/registry.ts` and
+  `mobile/src/components/LearnedProceduresCard.tsx` now remove same-app "better procedure"
+  fallback entirely. Exact replay either runs the requested approved procedure or records a
+  `procedure_rejected` debug event with per-step selector diagnostics and fails before Android
+  opens the target surface. Future debugging should focus on why teaching/storage produced only
+  static text/current-value selectors for Faras, not on substituting another procedure.
+- **Replay target-loss guard**: During a Faras replay, leaving Faras allowed later replay typing to
+  land in AI-OS's own learning-procedure text field. Do not relaunch or continue a replay once the
+  user leaves the target app. Native replay now aborts on target-surface loss with
+  `target_surface_lost_abort`, and recording now auto-stops with `recording_auto_stopped` when the
+  active root leaves the teaching target.
+- **Logcat gotchas**:
+  - The installed/running package in this build is `com.aioperatingsystem`, not
+    `com.ntsinga.mobile`. `adb shell pidof com.ntsinga.mobile` can falsely imply the app is not
+    running. Use `adb shell pidof com.aioperatingsystem` and `dumpsys activity processes`.
+  - A useful replay slice is:
+    `adb logcat -d -v time AIOS.Replay:I AIOS.Learning:I ReactNativeJS:I AndroidRuntime:E *:S`
+  - If that slice is quiet, check recents/process state; AI-OS may be top activity and Faras may
+    only be the previous task. Use `adb shell dumpsys activity recents`.
+  - Some logcat lines may come from an APK newer or different than the local checkout. During this
+    investigation logcat contained fields/events like `selectorKind`, `nodeClass`,
+    `frontWindows`, `screen_ready_before_text`, and `target_ready_before_text` that were not in the
+    local source at HEAD.
+- **Windows/sandbox gotchas**:
+  - Plain `python` lacked backend dependencies such as `python-dotenv`; use
+    `backend/.venv/Scripts/python.exe` for backend DB scripts.
+  - Direct Postgres inspection needs network approval; without it psycopg failed with
+    `Permission denied` to port 5432.
+  - Node/TypeScript may need filesystem approval because Node resolves paths under
+    `C:\Users\ElijahNtsinga` and can hit `EPERM` in the managed sandbox. Request scoped approval
+    for `npm exec` up front when validating this mobile workspace.
+  - Gradle may try to fetch or touch its wrapper/cache even with `--offline`; if it fails with a
+    socket permission error, rerun with approval. Request scoped Gradle approval up front for
+    Android validation/install tasks. Keep `TMP` and `TEMP` pointed at `C:\Windows\Temp` for Gradle
+    on this machine.
+  - Samsung Dual App/user 95 can retain or recreate an AI-OS install. `scripts/start-aios.ps1`
+    now removes stale packages across all Android users before install and always runs
+    `pm uninstall --user <non-primary-user> com.aioperatingsystem` after install, regardless of
+    whether a pre-check reports the clone. Verify with
+    `adb shell dumpsys package com.aioperatingsystem`; user 0 should be `installed=true` and user
+    95 should be `installed=false`.
+- **Next-agent checklist**:
+  1. Read this entry before replay work.
+  2. Check whether the backend is running on `127.0.0.1:8000`; if not, local `/procedures` calls
+     will fail even though remote Postgres has data.
+  3. Inspect both local SQLite and remote Postgres before concluding data is missing.
+  4. Verify the active Android package name before trusting `pidof`.
+  5. For replay bugs, summarize `debug_events` by `trace_id`, `procedure_id`, warning count, and
+     failure reasons before changing code.
+  6. Rebuild/reinstall the APK after native replay fixes; the connected phone keeps using the
+     installed APK until replaced.
+# 2026-07-28: Uber teaching capture stopped during launch
+
+- Symptom: teaching an Uber lesson repeatedly captured no semantic actions.
+- Evidence: `AIOS.Learning` logged `recording_auto_stopped` with `eventSurface=com.aioperatingsystem`, `activeRootSurface=com.aioperatingsystem`, and `targetSurface=com.ubercab` during the AI-OS-to-Uber launch transition. The target had not yet become active, so the new exit guard stopped recording too early.
+- Fix: recording now tracks `target_seen` and auto-stops only after the target surface has first been observed active and is subsequently left. The flag resets for every new recording.
+- Earlier Uber capture evidence: once Uber was active, the watcher captured 16 queued actions (`scroll:3`, `focus:1`, `text_input:11`, `tap:1`), so the native semantic capture path works after the launch race is avoided.
+
+# 2026-07-28: Teaching session ownership regression
+
+- Symptom: the UI showed no semantic inputs and Stop repeatedly failed with `At least one semantic action is required.`
+- Database evidence: multiple simultaneous `Ride 27` sessions were created. Session `0a52...` held 13 actions, while the current session `078b...` held 0 actions; Stop was targeting the empty session.
+- Cause: prior session guards (`activeSessionId`, `startInFlight`, `stopInFlight`, and drain ownership checks) had been removed from `LearningModeCard` during the upload simplification.
+- Fix: restored one-session locking, active-session drain ownership, timer cleanup, and Stop targeting the active session. This was a regression from the previous implementation, not an Uber accessibility limitation.
+
+# 2026-07-28: Learned procedures did not auto-refresh after teaching
+
+- Symptom: a newly completed lesson was saved but the Learned Procedures list did not update until manual refresh or remount.
+- Cause: the `aios.learning.procedureSaved` DeviceEventEmitter contract had been removed from both the completion and list components.
+- Fix: completion emits the event after `completeLearningSession`; Learned Procedures subscribes and reloads immediately.
+
+# 2026-07-28: Replay lost Uber target after focus gesture
+
+- Symptom: replay opened Uber and began the first focus step, but the subsequent text action failed and replay aborted with `target_surface_lost_abort`.
+- Evidence: logcat showed the root changing from `com.ubercab` to `com.aioperatingsystem` during `focus_settle_before_text`; the failed text action then saw AI-OS/recent-apps content instead of Uber.
+- Cause: the floating AI-OS overlay remained active during external-app replay and could reclaim the accessibility/foreground surface when the replay gesture ran.
+- Fix: external-app replay now suspends the overlay for the complete launch/replay operation and restores it in `finally`; the existing real gesture focus path and strict target-surface abort remain intact.

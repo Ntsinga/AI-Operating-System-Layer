@@ -45,6 +45,9 @@ class LearningSessionRequest(BaseModel):
 class LearningActionRequest(BaseModel):
     action: dict[str, Any]
 
+class LearningActionsBatchRequest(BaseModel):
+    actions: list[dict[str, Any]]
+
 
 class LearningActionsBatchRequest(BaseModel):
     actions: list[dict[str, Any]]
@@ -63,6 +66,15 @@ def learning_start(req: LearningSessionRequest) -> dict[str, Any]:
 def learning_action(session_id: str, req: LearningActionRequest) -> dict[str, Any]:
     try:
         return append_action(session_id, req.action)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+    except ValueError as error:
+        raise HTTPException(409, str(error))
+
+@app.post("/learning/sessions/{session_id}/actions/batch")
+def learning_actions_batch(session_id: str, req: LearningActionsBatchRequest) -> dict[str, Any]:
+    try:
+        return append_actions(session_id, req.actions[:500])
     except KeyError as error:
         raise HTTPException(404, str(error))
     except ValueError as error:

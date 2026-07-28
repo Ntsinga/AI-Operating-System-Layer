@@ -24,6 +24,7 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
       .edit()
       .putBoolean(LearningWatcherService.RECORDING, enabled)
       .putString(LearningWatcherService.TARGET_SURFACE, (targetSurface ?: "").take(200))
+      .putBoolean(LearningWatcherService.TARGET_SEEN, false)
     if (enabled) editor.putString(LearningWatcherService.QUEUE, "[]")
     editor.apply()
     promise.resolve(null)
@@ -105,13 +106,14 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
         "parentClass",
         "parentSelectorKind",
         "parentText",
+        "synthetic",
       )) {
         if (item.hasKey(key) && !item.isNull(key)) map[key] = dynamicToString(item.getDynamic(key))
       }
       mapped.add(map)
     }
     val runtimeValues = mutableMapOf<String, String>()
-    for (key in values.toHashMap().keys) if (!values.isNull(key)) runtimeValues[key] = values.getString(key) ?: ""
+    for (key in values.toHashMap().keys) if (!values.isNull(key)) runtimeValues[key] = dynamicToString(values.getDynamic(key))
     val completionSelector = completion?.toHashMap()?.mapValues { it.value.toString() }
     val packageToOpen = (targetSurface ?: mapped.firstOrNull { !(it["surface"].isNullOrBlank()) }?.get("surface") ?: "").take(200)
     val now = System.currentTimeMillis()
@@ -126,8 +128,14 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     replayInProgress = true
     lastReplayStartedAt = now
     lastReplayTarget = packageToOpen
-    if (packageToOpen.isNotBlank() && packageToOpen != context.packageName) {
-      try {
+    val replayingExternalPackage = packageToOpen.isNotBlank() && packageToOpen != context.packageName
+    val overlayWasRunning = replayingExternalPackage && OverlayService.isRunning
+    if (overlayWasRunning) {
+      android.util.Log.i("AIOS.Learning", "{\"event\":\"replay_overlay_suspended\",\"target\":\"$packageToOpen\"}")
+      OverlayService.stop(context)
+    }
+    try {
+      if (replayingExternalPackage) {
         val launchIntent = context.packageManager.getLaunchIntentForPackage(packageToOpen)
         if (launchIntent == null) {
           promise.reject("LEARNING_REPLAY_TARGET_NOT_LAUNCHABLE", "No launchable activity found for package: $packageToOpen")
@@ -135,15 +143,13 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
         }
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         context.startActivity(launchIntent)
-      } catch (error: Exception) {
-        replayInProgress = false
-        promise.reject("LEARNING_REPLAY_TARGET_OPEN_FAILED", error)
-        return
       }
-    }
-    try {
       promise.resolve(Arguments.makeNativeMap(service.replay(mapped, runtimeValues, completionSelector, packageToOpen)))
     } finally {
+      if (overlayWasRunning) {
+        OverlayService.start(context)
+        android.util.Log.i("AIOS.Learning", "{\"event\":\"replay_overlay_restored\",\"target\":\"$packageToOpen\"}")
+      }
       replayInProgress = false
     }
   }
@@ -157,7 +163,10 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
   }
   private fun dynamicToString(dynamic: Dynamic): String = when (dynamic.type) {
     ReadableType.Boolean -> dynamic.asBoolean().toString()
-    ReadableType.Number -> dynamic.asDouble().toString()
+    ReadableType.Number -> {
+      val number = dynamic.asDouble()
+      if (number % 1.0 == 0.0) number.toLong().toString() else number.toString()
+    }
     ReadableType.String -> dynamic.asString() ?: ""
     else -> ""
   }

@@ -8,8 +8,8 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $backendRoot = Join-Path $projectRoot 'backend'
 $mobileRoot = Join-Path $projectRoot 'mobile'
 $pythonPath = Join-Path $backendRoot '.venv\Scripts\python.exe'
-$androidPackageName = 'com.aioperatingsystem'
 $legacyAndroidPackages = @(
+    'com.aioperatingsystem',
     'com.ntsinga.mobile',
     'com.ntsinga.aios',
     'com.aios',
@@ -23,6 +23,15 @@ function Get-ConnectedAndroidDevices {
     return @($lines | Where-Object { $_ -match "`tdevice$" } | ForEach-Object { ($_ -split "`t")[0] })
 }
 
+function Get-AndroidUsers {
+    param([string]$Device)
+
+    $lines = & adb -s $Device shell pm list users
+    return @($lines | Where-Object { $_ -match 'UserInfo\{(\d+):' } | ForEach-Object {
+        if ($_ -match 'UserInfo\{(\d+):') { $Matches[1] }
+    })
+}
+
 function Remove-LegacyAndroidPackages {
     $devices = Get-ConnectedAndroidDevices
     if ($devices.Count -eq 0) {
@@ -31,44 +40,32 @@ function Remove-LegacyAndroidPackages {
     }
 
     foreach ($device in $devices) {
+        $users = Get-AndroidUsers -Device $device
         foreach ($packageName in $legacyAndroidPackages) {
-            $installed = & adb -s $device shell pm list packages $packageName
+            $installed = & adb -s $device shell pm list packages -u $packageName
             if ($installed -match "package:$([regex]::Escape($packageName))") {
-                Write-Host "Removing legacy package $packageName from $device..."
+                Write-Host "Removing stale package $packageName from $device across users: $($users -join ', ')..."
+                foreach ($user in $users) {
+                    & adb -s $device shell pm uninstall --user $user $packageName | Out-Host
+                }
                 & adb -s $device uninstall $packageName | Out-Host
             }
         }
     }
 }
 
-function Get-AndroidUserIds {
-    param([string]$Device)
-
-    $users = & adb -s $Device shell pm list users 2>$null
-    return @($users | ForEach-Object {
-        if ($_ -match 'UserInfo\{(\d+):') { $Matches[1] }
-    })
-}
-
-function Remove-AndroidPackageFromSecondaryUsers {
-    param([string]$PackageName)
-
+function Remove-SecondaryAndroidUserClones {
     $devices = Get-ConnectedAndroidDevices
     if ($devices.Count -eq 0) {
-        Write-Host "No connected Android device found for secondary-user cleanup of $PackageName."
+        Write-Host 'No connected Android device found for secondary-user cleanup.'
         return
     }
 
     foreach ($device in $devices) {
-        $userIds = Get-AndroidUserIds -Device $device
-        foreach ($userId in $userIds) {
-            if ($userId -eq '0') { continue }
-
-            $installed = & adb -s $device shell cmd package list packages --user $userId $PackageName 2>$null
-            if ($installed -match "package:$([regex]::Escape($PackageName))") {
-                Write-Host "Removing $PackageName from secondary Android user $userId on $device..."
-                & adb -s $device shell pm uninstall --user $userId $PackageName | Out-Host
-            }
+        $users = Get-AndroidUsers -Device $device | Where-Object { $_ -ne '0' }
+        foreach ($user in $users) {
+            Write-Host "Forcing AI-OS secondary-user cleanup for Android user $user on $device..."
+            & adb -s $device shell pm uninstall --user $user com.aioperatingsystem | Out-Host
         }
     }
 }
@@ -110,7 +107,6 @@ if ($BuildOnly -or $SkipBuild) {
 }
 
 Remove-LegacyAndroidPackages
-Remove-AndroidPackageFromSecondaryUsers -PackageName $androidPackageName
 
 Push-Location $mobileRoot
 try {
@@ -121,5 +117,5 @@ try {
     Pop-Location
 }
 
-Remove-AndroidPackageFromSecondaryUsers -PackageName $androidPackageName
+Remove-SecondaryAndroidUserClones
 

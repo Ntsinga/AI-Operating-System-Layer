@@ -654,6 +654,40 @@ export const listLearnedProceduresTool = {
   execute: () => listLearnedProcedures(),
 } satisfies ToolDefinition<Record<string, never>, unknown>;
 
+function hasStableReplaySelector(args: Record<string, unknown>) {
+  const resourceId = String(args.resourceId ?? '');
+  const contentDescription = String(args.contentDescription ?? '');
+  const text = String(args.text ?? '');
+  const fieldKey = String(args.fieldKey ?? '');
+  return Boolean(resourceId || contentDescription || (fieldKey && fieldKey !== text));
+}
+
+function procedureHasRealReplayAction(procedure: { steps: Array<{ arguments?: Record<string, unknown> }> }) {
+  return procedure.steps.some((step) => {
+    const action = String(step.arguments?.action ?? '');
+    return (action === 'tap' || action === 'text_input') && hasStableReplaySelector(step.arguments ?? {});
+  });
+}
+
+function replaySelectorDiagnostics(procedure: { steps: Array<{ arguments?: Record<string, unknown> }> }) {
+  return procedure.steps.map((step, index) => {
+    const args = step.arguments ?? {};
+    const action = String(args.action ?? '');
+    const text = String(args.text ?? '');
+    const fieldKey = String(args.fieldKey ?? '');
+    return {
+      step: index + 1,
+      action,
+      selectorKind: String(args.selectorKind ?? ''),
+      hasResourceId: Boolean(args.resourceId),
+      hasContentDescription: Boolean(args.contentDescription),
+      hasDistinctFieldKey: Boolean(fieldKey && fieldKey !== text),
+      text: text.slice(0, 80),
+      fieldKey: fieldKey.slice(0, 80),
+    };
+  });
+}
+
 export const replayLearnedProcedureTool = {
   name: 'replay_learned_procedure',
   description: 'Replays an approved learned phone-use procedure through AccessibilityService. Provide one-time runtimeValues for fields that must be typed, such as pickup and destination. For ride-hailing, call get_current_location first when pickup is "here" and pass that location as the pickup runtime value. Never use this for booking, payment, or final submission without a separate user confirmation.',
@@ -672,12 +706,31 @@ export const replayLearnedProcedureTool = {
     const selectedProcedure = procedures.find((candidate) => candidate.id === input.procedureId);
     if (!selectedProcedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
     if (selectedProcedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
+    if (!procedureHasRealReplayAction(selectedProcedure)) {
+      const details = {
+        requestedProcedureId: selectedProcedure.id,
+        requestedIntent: selectedProcedure.intent,
+        requestedScope: selectedProcedure.scope,
+        requestedActions: selectedProcedure.steps.map((step) => String(step.arguments?.action ?? '')),
+        selectorDiagnostics: replaySelectorDiagnostics(selectedProcedure),
+        reason: 'selected_procedure_has_no_stable_replay_selector',
+      };
+      await recordDebugEvents([{
+        traceId,
+        flow: 'replay',
+        event: 'procedure_rejected',
+        level: 'error',
+        procedureId: selectedProcedure.id,
+        details,
+      }]).catch(() => undefined);
+      throw new Error(`Learned procedure ${selectedProcedure.id} cannot replay yet: it has no stable tap or text-input selector. Reteach it, then inspect procedure_rejected debug details.`);
+    }
     const procedure = selectedProcedure;
     await recordDebugEvents([{
       traceId,
       flow: 'replay',
       event: 'procedure_selected',
-      level: procedure.id === selectedProcedure.id ? 'info' : 'warn',
+      level: 'info',
       procedureId: procedure.id,
       details: {
         requestedProcedureId: selectedProcedure.id,
@@ -687,7 +740,7 @@ export const replayLearnedProcedureTool = {
         selectedIntent: procedure.intent,
         requestedActions: selectedProcedure.steps.map((step) => String(step.arguments?.action ?? '')),
         selectedActions: procedure.steps.map((step) => String(step.arguments?.action ?? '')),
-        reason: 'exact_requested_procedure',
+        reason: 'selected_exact_procedure_is_replayable',
       },
     }]).catch(() => undefined);
     const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
@@ -705,7 +758,7 @@ export const replayLearnedProcedureTool = {
       requestedProcedureId: selectedProcedure.id,
       procedureId: procedure.id,
       intent: procedure.intent,
-      replayFallbackUsed: procedure.id !== selectedProcedure.id,
+      replayFallbackUsed: false,
       ...result,
       requiresManualConfirmation: result.skipped > 0 || result.verified === 0,
     };

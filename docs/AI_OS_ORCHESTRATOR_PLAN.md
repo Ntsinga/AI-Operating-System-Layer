@@ -861,6 +861,19 @@ Replay now supports an optional completion selector and reports verification sta
 lookup falls back from resource ID to visible text/content description. Device validation is
 tracked in `docs/ANDROID_VALIDATION_CHECKLIST.md` and requires an Android emulator or device.
 
+#### Phase 5 reliability direction: semantic state machines
+
+Cross-app teaching and replay is feasible, but accessibility event streams are not a faithful
+recording of every physical gesture. Custom controls may expose focus or text changes without a
+click event; screens may create fields only after activation; and layout changes may emit false
+scroll callbacks. The recorder/replayer must therefore model workflows as semantic state
+transitions rather than replaying an event list literally. Each action should retain its target,
+hierarchy context, pre/post screen evidence, and confidence. Replay should use bounded,
+app-agnostic activation and gesture fallbacks, wait for the expected state, validate the target
+package and node before input, and abort with diagnostics when confidence is low. It must never
+silently switch procedures or type into another app. Validation should cover app categories and
+UI patterns, with app-specific adapters reserved for interfaces that expose no stable semantics.
+
 ### Core-phase verification
 
 Phases 1–4 have backend and contract coverage for tool-facing orchestration, workflow memory,
@@ -913,6 +926,21 @@ without silently expanding permissions or changing high-risk behavior.
 
 Suggest safe optimizations for repeated routines, explain the proposed change, and apply it
 only after policy checks and user approval where the outcome or risk changes.
+
+### Phase 5.5 - Planner-guided replay recovery
+
+The planner may guide recovery after deterministic replay detects a mismatch, but it must not
+replace replay or issue unconstrained taps. Evolve saved steps toward checkpoints containing
+preconditions, intended targets, expected postconditions, stable selectors and alternatives,
+screen/hierarchy evidence, reversibility, confidence, and known failure signatures.
+
+After each step, replay observes semantic state and either continues or invokes one bounded policy:
+wait for loading, retry the selector, gesture-focus, reopen the expected field, dismiss a known
+overlay, resume from the last confirmed checkpoint, request user confirmation, or abort. Recovery
+must carry a reason and action budget, validate the target package, and emit a trace. The planner
+must not invent coordinates, switch procedures, type while the target is unverified, or silently
+continue after ambiguity. Visual computer-use fallback is reserved for interfaces without enough
+accessibility evidence and follows the same safety and confirmation policy.
 
 ## Immediate Next Action
 

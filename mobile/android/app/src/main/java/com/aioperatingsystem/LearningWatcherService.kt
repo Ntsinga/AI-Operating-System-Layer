@@ -24,8 +24,6 @@ class LearningWatcherService : AccessibilityService() {
       if (!prefs.getBoolean(RECORDING, false)) return
       val surface = event.packageName?.toString() ?: ""
       val targetSurface = prefs.getString(TARGET_SURFACE, "") ?: ""
-      if (targetSurface.isNotBlank() && surface != targetSurface) return
-      if (targetSurface.isBlank() && (surface == packageName || surface == "com.android.settings")) return
       val actionType = when (event.eventType) {
         AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
         AccessibilityEvent.TYPE_VIEW_FOCUSED -> "focus"
@@ -37,6 +35,49 @@ class LearningWatcherService : AccessibilityService() {
         else -> "observe"
       }
       val activeRootPackage = rootInActiveWindow?.packageName?.toString() ?: ""
+      if (targetSurface.isNotBlank() && activeRootPackage == targetSurface) {
+        prefs.edit().putBoolean(TARGET_SEEN, true).apply()
+      }
+      val targetWasSeen = prefs.getBoolean(TARGET_SEEN, false)
+      if (targetWasSeen && targetSurface.isNotBlank() && activeRootPackage.isNotBlank() && activeRootPackage != targetSurface) {
+        prefs.edit().putBoolean(RECORDING, false).putString(TARGET_SURFACE, "").apply()
+        Log.i("AIOS.Learning", JSONObject()
+          .put("event", "recording_auto_stopped")
+          .put("reason", "target_app_exited")
+          .put("eventSurface", surface)
+          .put("activeRootSurface", activeRootPackage)
+          .put("targetSurface", targetSurface)
+          .put("action", actionType)
+          .toString()
+        )
+        return
+      }
+      if (targetSurface.isNotBlank() && surface != targetSurface) return
+      if (targetSurface.isBlank() && (surface == packageName || surface == "com.android.settings")) return
+      if (actionType == "scroll") {
+        val hasSemanticAction = synchronized(QUEUE_LOCK) {
+          readRecordedQueue(prefs.getString(QUEUE, "[]")).let { queue ->
+            (0 until queue.length()).any { index ->
+              queue.optJSONObject(index)?.optString("action") in listOf("tap", "focus", "text_input")
+            }
+          }
+        }
+        val bounds = event.source?.let { source ->
+          val rect = Rect()
+          source.getBoundsInScreen(rect)
+          rect
+        }
+        if (!hasSemanticAction || bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
+          Log.i("AIOS.Learning", JSONObject()
+            .put("event", "recording_event_skipped")
+            .put("reason", "startup_scroll_noise")
+            .put("surface", surface)
+            .put("hasSemanticAction", hasSemanticAction)
+            .put("boundsValid", bounds != null && bounds.width() > 0 && bounds.height() > 0)
+            .toString())
+          return
+        }
+      }
       if (targetSurface.isNotBlank() &&
         actionType in listOf("screen_transition", "observe") &&
         activeRootPackage.isNotBlank() &&
@@ -111,6 +152,14 @@ class LearningWatcherService : AccessibilityService() {
       }
       synchronized(QUEUE_LOCK) {
         val queue = readRecordedQueue(prefs.getString(QUEUE, "[]"))
+        syntheticActivationBeforeFocus(action, queue)?.let { tapAction ->
+          queue.put(tapAction)
+          Log.i("AIOS.Learning", tapAction.toString())
+        }
+        syntheticActivationBeforeText(action, queue)?.let { tapAction ->
+          queue.put(tapAction)
+          Log.i("AIOS.Learning", tapAction.toString())
+        }
         syntheticFocusBeforeText(action, queue)?.let { focusAction ->
           queue.put(focusAction)
           Log.i("AIOS.Learning", focusAction.toString())
@@ -127,6 +176,8 @@ class LearningWatcherService : AccessibilityService() {
   fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null, requestedSurface: String? = null): Map<String, Any> {
     var executed = 0; var skipped = 0
     var lastTextInputValue: String? = null
+    var targetSurfaceLost = false
+    var lastConfirmedCheckpoint = 0
     val trace = mutableListOf<Map<String, Any?>>()
     val targetSurface = requestedSurface?.takeIf { it.isNotBlank() }
       ?: actions.firstNotNullOfOrNull { it["surface"]?.takeIf { surface -> surface.isNotBlank() } }
@@ -158,12 +209,13 @@ class LearningWatcherService : AccessibilityService() {
       val type = action["action"] ?: ""
       val selector = selectorDetails(action)
       fun addTrace(event: String, level: String = "info", details: Map<String, Any?> = emptyMap()) {
+        if (event == "step_executed" || event == "step_verified") lastConfirmedCheckpoint = step
         val payload = mapOf(
           "flow" to "replay",
           "event" to event,
           "level" to level,
           "step" to step,
-          "details" to (mapOf("action" to type, "selector" to selector) + details)
+          "details" to (mapOf("action" to type, "selector" to selector, "lastConfirmedCheckpoint" to lastConfirmedCheckpoint) + details)
         )
         trace.add(payload)
         Log.i("AIOS.Replay", JSONObject(payload).toString())
@@ -172,10 +224,11 @@ class LearningWatcherService : AccessibilityService() {
         addTrace("step_ignored", details = mapOf("reason" to "non_actionable_recording_noise", "visibleTexts" to currentVisibleTexts()))
         continue
       }
-      if (!ensureTargetSurfaceForStep(targetSurface)) {
+      if (!isTargetSurfaceActive(targetSurface)) {
+        targetSurfaceLost = true
         skipped++
-        addTrace("step_skipped", "warn", mapOf("reason" to "target_surface_lost", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
-        continue
+        addTrace("step_skipped", "warn", mapOf("reason" to "target_surface_lost_abort", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts(), "frontWindows" to frontWindowSummary()))
+        break
       }
       if (type == "screen_transition") {
         val ready = waitForScreen(action["screenTitle"] ?: action["text"], 3500)
@@ -335,14 +388,14 @@ class LearningWatcherService : AccessibilityService() {
       "flow" to "replay",
       "event" to "replay_completed",
       "level" to if (skipped > 0 || verifiedInt == 0) "warn" else "info",
-      "details" to mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "completion" to completion)
+      "details" to mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "completion" to completion, "aborted" to targetSurfaceLost, "abortReason" to if (targetSurfaceLost) "target_surface_lost" else null)
     )
     trace.add(summary)
     Log.i("AIOS.Replay", JSONObject(summary).toString())
     return mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "trace" to trace)
   }
   private fun selectorDetails(action: Map<String, String>): Map<String, String> =
-    listOf("surface", "resourceId", "resourceIdOccurrence", "text", "contentDescription", "fieldKey", "screenTitle", "selectorKind", "nodeClass", "parentSelectorKind").mapNotNull { key ->
+    listOf("surface", "resourceId", "resourceIdOccurrence", "text", "contentDescription", "fieldKey", "screenTitle", "selectorKind", "nodeClass", "parentSelectorKind", "parentText").mapNotNull { key ->
       action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
     }.toMap()
 
@@ -356,7 +409,7 @@ class LearningWatcherService : AccessibilityService() {
     action["contentDescription"]?.takeIf { it.isNotBlank() }
 
   private fun replayTextSelector(action: Map<String, String>): String? {
-    if (isEditableFieldAction(action) && action["resourceId"].isNullOrBlank() && action["contentDescription"].isNullOrBlank()) {
+    if (isEditableFieldAction(action)) {
       return null
     }
     return action["text"]?.takeIf { it.isNotBlank() }
@@ -570,23 +623,10 @@ class LearningWatcherService : AccessibilityService() {
     return false
   }
 
-  private fun ensureTargetSurfaceForStep(surface: String?): Boolean {
+  private fun isTargetSurfaceActive(surface: String?): Boolean {
     if (surface.isNullOrBlank() || surface == packageName) return true
     if (currentRootSurface() == surface) return true
-    launchSurface(surface)
-    return waitForSurface(surface, 5000)
-  }
-
-  private fun launchSurface(surface: String): Boolean {
-    return try {
-      val intent = packageManager.getLaunchIntentForPackage(surface) ?: return false
-      intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-      startActivity(intent)
-      true
-    } catch (err: Exception) {
-      Log.w("AIOS.Replay", "Failed to relaunch replay target $surface", err)
-      false
-    }
+    return false
   }
 
   private fun waitForNode(resourceId: String?, text: String?, contentDescription: String?, timeoutMs: Long, resourceIdOccurrence: Int? = null, preferLastDuplicate: Boolean = false, action: Map<String, String>? = null): AccessibilityNodeInfo? {
@@ -783,9 +823,12 @@ class LearningWatcherService : AccessibilityService() {
     }
     if (!resourceId.isNullOrBlank()) {
       val candidates = root.findAccessibilityNodeInfosByViewId(resourceId)
-      if (resourceIdOccurrence != null && resourceIdOccurrence >= 0 && resourceIdOccurrence < candidates.size) {
-        val candidate = candidates[resourceIdOccurrence]
-        if (selectorMatches(candidate, text, contentDescription) && selectorShapeMatches(candidate, action)) return candidate
+      val contextMatches = candidates.filter { selectorMatches(it, text, contentDescription) && selectorShapeMatches(it, action) && selectorContextMatches(it, action) }
+      if (contextMatches.isNotEmpty()) {
+        if (resourceIdOccurrence != null && resourceIdOccurrence >= 0 && resourceIdOccurrence < contextMatches.size) {
+          return contextMatches[resourceIdOccurrence]
+        }
+        return contextMatches.first()
       }
       if (preferLastDuplicate && candidates.size > 1) {
         candidates.asReversed().firstOrNull { selectorMatches(it, text, contentDescription) && selectorShapeMatches(it, action) }?.let { return it }
@@ -795,11 +838,46 @@ class LearningWatcherService : AccessibilityService() {
       }
       candidates.firstOrNull { selectorShapeMatches(it, action) }?.let { return it }
     }
+    if (action?.get("synthetic") == "true" && action["action"] == "tap") {
+      findPreActivationControl(root, action)?.let { return it }
+    }
     if (!text.isNullOrBlank()) root.findAccessibilityNodeInfosByText(text).firstOrNull { selectorMatches(it, text, contentDescription) && selectorShapeMatches(it, action) }?.let { return it }
     // Adaptive fallback: app updates often change resource IDs but preserve visible labels,
     // content descriptions, or the semantic class. Walk the current tree instead of replaying
     // stale coordinates.
     return findSemanticFallback(root, text, contentDescription, action)
+  }
+
+  private fun findPreActivationControl(root: AccessibilityNodeInfo, action: Map<String, String>): AccessibilityNodeInfo? {
+    val display = resources.displayMetrics
+    val screenWidth = display.widthPixels
+    val screenHeight = display.heightPixels
+    var best: AccessibilityNodeInfo? = null
+    var bestScore = Int.MIN_VALUE
+    fun visit(node: AccessibilityNodeInfo) {
+      if (node.isVisibleToUser && node.isClickable && node.isEnabled) {
+        val kind = selectorKind(node)
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        val broad = bounds.width() >= screenWidth * 0.55
+        val upper = bounds.top < screenHeight * 0.55
+        val fieldLike = kind == "clickable_result" || (kind == "clickable_control" && broad)
+        if (fieldLike && upper && bounds.height() > 40) {
+          var score = 0
+          if (kind == "clickable_result") score += 4
+          if (broad) score += 3
+          if (node.text?.toString()?.trim()?.isNotBlank() == true || node.contentDescription?.toString()?.trim()?.isNotBlank() == true) score += 2
+          if (bounds.top > screenHeight * 0.1) score += 1
+          if (score > bestScore) {
+            bestScore = score
+            best = node
+          }
+        }
+      }
+      for (index in 0 until node.childCount) node.getChild(index)?.let { child -> visit(child); if (child !== best) child.recycle() }
+    }
+    visit(root)
+    return best
   }
 
   private fun findEditableFallback(node: AccessibilityNodeInfo, action: Map<String, String>? = null): AccessibilityNodeInfo? {
@@ -867,6 +945,84 @@ class LearningWatcherService : AccessibilityService() {
       if (!relaxedKind) return false
     }
     return true
+  }
+
+  private fun syntheticActivationBeforeFocus(action: JSONObject, queue: JSONArray): JSONObject? {
+    if (action.optString("action") != "focus") return null
+    if (!action.optBoolean("clickable", false) && action.optString("selectorKind") != "editable_field") return null
+    if (hasRecentFocusOrTapForSameTarget(action, queue)) return null
+    return JSONObject(action.toString())
+      .put("action", "tap")
+      .put("synthetic", true)
+      .removeTextInputValue()
+  }
+  private fun syntheticActivationBeforeText(action: JSONObject, queue: JSONArray): JSONObject? {
+    if (action.optString("action") != "text_input" || hasRecentFocusOrTapForSameTarget(action, queue)) return null
+    val screen = action.optJSONObject("screen") ?: return null
+    val actionBounds = action.optJSONObject("bounds") ?: return null
+    val left = actionBounds.optInt("left", Int.MIN_VALUE)
+    val top = actionBounds.optInt("top", Int.MIN_VALUE)
+    val right = actionBounds.optInt("right", Int.MIN_VALUE)
+    val bottom = actionBounds.optInt("bottom", Int.MIN_VALUE)
+    if (left == Int.MIN_VALUE || top == Int.MIN_VALUE || right == Int.MIN_VALUE || bottom == Int.MIN_VALUE) return null
+    val elements = screen.optJSONArray("interactiveElements") ?: return null
+    var best: JSONObject? = null
+    var bestArea = Long.MAX_VALUE
+    for (index in 0 until elements.length()) {
+      val candidate = elements.optJSONObject(index) ?: continue
+      if (!candidate.optBoolean("clickable", false) || candidate.optString("selectorKind") !in listOf("clickable_result", "clickable_control")) continue
+      val bounds = candidate.optJSONObject("bounds") ?: continue
+      val cLeft = bounds.optInt("left", Int.MIN_VALUE)
+      val cTop = bounds.optInt("top", Int.MIN_VALUE)
+      val cRight = bounds.optInt("right", Int.MIN_VALUE)
+      val cBottom = bounds.optInt("bottom", Int.MIN_VALUE)
+      if (cLeft <= left && cTop <= top && cRight >= right && cBottom >= bottom) {
+        val area = (cRight - cLeft).toLong() * (cBottom - cTop).toLong()
+        if (area in 1 until bestArea && candidate.optString("resourceId") != action.optString("resourceId")) {
+          best = candidate
+          bestArea = area
+        }
+      }
+    }
+    val target = best ?: return null
+    return JSONObject(action.toString()).apply {
+      put("action", "tap")
+      put("synthetic", true)
+      remove("value")
+      remove("role")
+      remove("editable")
+      remove("nodeClass")
+      remove("parentClass")
+      remove("parentSelectorKind")
+      remove("parentText")
+      target.keys().forEach { key -> put(key, target.get(key)) }
+    }
+  }
+  private fun selectorContextMatches(node: AccessibilityNodeInfo, action: Map<String, String>?): Boolean {
+    val expectedParentText = action?.get("parentText")?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+      ?: return true
+    return nodeContextLabels(node).any { label ->
+      label == expectedParentText || label.contains(expectedParentText) || expectedParentText.contains(label)
+    }
+  }
+  private fun nodeContextLabels(node: AccessibilityNodeInfo): List<String> {
+    val labels = mutableListOf<String>()
+    var parent = node.parent
+    var depth = 0
+    while (parent != null && depth < 4) {
+      readableLabel(parent)?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let { labels.add(it) }
+      for (index in 0 until parent.childCount) {
+        parent.getChild(index)?.let { sibling ->
+          readableLabel(sibling)?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let { labels.add(it) }
+          sibling.recycle()
+        }
+      }
+      val next = parent.parent
+      parent.recycle()
+      parent = next
+      depth++
+    }
+    return labels
   }
   private fun performClick(node: AccessibilityNodeInfo): Boolean {
     actionableClickNode(node)?.let { target ->
@@ -1084,6 +1240,7 @@ class LearningWatcherService : AccessibilityService() {
     const val RECORDING = "recording"
     const val QUEUE = "queue"
     const val TARGET_SURFACE = "target_surface"
+    const val TARGET_SEEN = "target_seen"
     private const val MAX_QUEUE_CHARS = 400000
     private const val MAX_RECORDED_ACTIONS = 240
     private const val MAX_SCREEN_VISIBLE_TEXTS = 16

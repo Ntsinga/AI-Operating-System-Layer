@@ -8,35 +8,29 @@ import { colors } from '../theme';
 export function LearningModeCard() {
   const [intent, setIntent] = useState(''); const [appQuery, setAppQuery] = useState(''); const [selectedApp, setSelectedApp] = useState<InstalledApp | null>(null); const [apps, setApps] = useState<InstalledApp[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null); const [count, setCount] = useState(0); const [message, setMessage] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeSessionId = useRef<string | null>(null);
   const startInFlight = useRef(false);
   const stopInFlight = useRef(false);
-  useEffect(() => { getAppManager().getInstalledApps().then(setApps).catch(() => setApps([])); }, []);
-  function summarizeDrainedActions(actions: Array<Record<string, unknown>>) {
-    const counts: Record<string, number> = {};
-    for (const action of actions) {
-      const type = String(action.action || 'unknown');
-      counts[type] = (counts[type] || 0) + 1;
-    }
-    return { count: actions.length, counts };
-  }
-  async function saveQueuedActions(targetSessionId: string) {
-    if (activeSessionId.current !== targetSessionId) return { total: 0, counts: {} as Record<string, number> };
+  useEffect(() => { getAppManager().getInstalledApps().then(setApps).catch(() => setApps([])); return () => { if (timer.current) clearInterval(timer.current); }; }, []);
+  async function saveQueuedActions(activeSessionId: string) {
+    if (activeSessionId !== activeSessionIdRef.current) return 0;
     const actions = await peekLearningActions();
-    if (activeSessionId.current !== targetSessionId) return { total: 0, counts: {} as Record<string, number> };
-    const summary = summarizeDrainedActions(actions);
+    if (activeSessionId !== activeSessionIdRef.current) return 0;
     if (actions.length > 0) {
-      await appendLearningActionsBatch(targetSessionId, actions);
+      await appendLearningActionsBatch(activeSessionId, actions);
       await clearLearningActions();
       setCount((value) => value + actions.length);
     }
-    return { total: actions.length, counts: summary.counts };
+    return actions.length;
   }
+  const activeSessionIdRef = activeSessionId;
   async function start() {
-    if (!intent.trim() || !selectedApp || sessionId || startInFlight.current) return;
+    if (!intent.trim() || !selectedApp || sessionId || activeSessionId.current || startInFlight.current) return;
     startInFlight.current = true;
     try {
-      activeSessionId.current = null;
+      if (timer.current) clearInterval(timer.current);
+      timer.current = null;
       setCount(0); setMessage(`Preparing to record ${selectedApp.name}...`);
       const session = await startLearningSession(intent.trim(), selectedApp.packageName);
       activeSessionId.current = session.sessionId;
@@ -50,6 +44,7 @@ export function LearningModeCard() {
         details: { appPackage: selectedApp.packageName, intent: intent.trim() },
       }]).catch(() => undefined);
       setMessage(`Recording ${selectedApp.name}. Perform the task, then return here to finish.`);
+      timer.current = setInterval(async () => { await saveQueuedActions(session.sessionId); }, 800);
       await getAppManager().openApplication(selectedApp.packageName);
     } catch (error) {
       activeSessionId.current = null;
@@ -66,20 +61,11 @@ export function LearningModeCard() {
     if (!finishingSessionId || stopInFlight.current) return;
     stopInFlight.current = true;
     try {
-      setMessage('Finishing teaching. Saving captured actions...');
-      const beforeDisable = await saveQueuedActions(finishingSessionId);
+      if (timer.current) clearInterval(timer.current); timer.current = null;
+      const drainedBeforeDisable = await saveQueuedActions(finishingSessionId);
       await setLearningRecording(false, undefined);
-      const afterDisable = await saveQueuedActions(finishingSessionId);
-      const drained = beforeDisable.total + afterDisable.total;
-      const drainedCounts = { ...beforeDisable.counts };
-      for (const [type, countForType] of Object.entries(afterDisable.counts)) drainedCounts[type] = (drainedCounts[type] || 0) + countForType;
-      await recordDebugEvents([{
-        traceId: finishingSessionId,
-        flow: 'learning',
-        event: 'native_queue_drained',
-        sessionId: finishingSessionId,
-        details: { beforeDisable, afterDisable, total: drained, counts: drainedCounts, appPackage: selectedApp?.packageName },
-      }]).catch(() => undefined);
+      const drainedAfterDisable = await saveQueuedActions(finishingSessionId);
+      const drained = drainedBeforeDisable + drainedAfterDisable;
       const result = await completeLearningSession(finishingSessionId);
       DeviceEventEmitter.emit('aios.learning.procedureSaved', { sessionId: finishingSessionId, actionCount: result.actions.length });
       await recordDebugEvents([{
@@ -87,7 +73,7 @@ export function LearningModeCard() {
         flow: 'learning',
         event: 'native_recording_disabled',
         sessionId: finishingSessionId,
-        details: { actionCount: result.actions.length, drained, counts: drainedCounts, appPackage: selectedApp?.packageName },
+        details: { actionCount: result.actions.length, appPackage: selectedApp?.packageName },
       }]).catch(() => undefined);
       setMessage(`Learned ${result.actions.length} semantic actions. Review it before reuse.`);
       activeSessionId.current = null;
