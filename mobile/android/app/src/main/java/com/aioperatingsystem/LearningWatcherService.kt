@@ -190,7 +190,8 @@ class LearningWatcherService : AccessibilityService() {
         performClick(node)
         Thread.sleep(260)
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-        Thread.sleep(40)
+        Thread.sleep(FOCUS_SETTLE_BEFORE_TYPING_MS)
+        addTrace("focus_settle_before_text", details = mapOf("waitMs" to FOCUS_SETTLE_BEFORE_TYPING_MS, "fieldKey" to key, "visibleTexts" to currentVisibleTexts()))
         val ok = typeTextIncrementally(action, value)
         if (ok) {
           val attempted = "set_text_incremental"
@@ -378,7 +379,7 @@ class LearningWatcherService : AccessibilityService() {
     ) ?: return false
     return try {
       node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-      Thread.sleep(40)
+      Thread.sleep(FOCUS_SETTLE_BEFORE_TYPING_MS)
       node.performAction(
         AccessibilityNodeInfo.ACTION_SET_TEXT,
         android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "") }
@@ -887,6 +888,7 @@ class LearningWatcherService : AccessibilityService() {
     private const val MAX_RECORDED_ACTIONS = 240
     private const val MAX_SCREEN_VISIBLE_TEXTS = 16
     private const val MAX_SCREEN_ELEMENTS = 14
+    private const val FOCUS_SETTLE_BEFORE_TYPING_MS = 1500L
     private const val MAX_TEXT_CHARS = 90
     private const val MAX_ID_CHARS = 140
     val QUEUE_LOCK = Any()
