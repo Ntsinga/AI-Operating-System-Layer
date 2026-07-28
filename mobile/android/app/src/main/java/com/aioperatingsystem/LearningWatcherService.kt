@@ -172,6 +172,11 @@ class LearningWatcherService : AccessibilityService() {
         addTrace("step_ignored", details = mapOf("reason" to "non_actionable_recording_noise", "visibleTexts" to currentVisibleTexts()))
         continue
       }
+      if (!ensureTargetSurfaceForStep(targetSurface)) {
+        skipped++
+        addTrace("step_skipped", "warn", mapOf("reason" to "target_surface_lost", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
+        continue
+      }
       if (type == "screen_transition") {
         val ready = waitForScreen(action["screenTitle"] ?: action["text"], 3500)
         if (ready) {
@@ -563,6 +568,25 @@ class LearningWatcherService : AccessibilityService() {
       Thread.sleep(150)
     }
     return false
+  }
+
+  private fun ensureTargetSurfaceForStep(surface: String?): Boolean {
+    if (surface.isNullOrBlank() || surface == packageName) return true
+    if (currentRootSurface() == surface) return true
+    launchSurface(surface)
+    return waitForSurface(surface, 5000)
+  }
+
+  private fun launchSurface(surface: String): Boolean {
+    return try {
+      val intent = packageManager.getLaunchIntentForPackage(surface) ?: return false
+      intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+      startActivity(intent)
+      true
+    } catch (err: Exception) {
+      Log.w("AIOS.Replay", "Failed to relaunch replay target $surface", err)
+      false
+    }
   }
 
   private fun waitForNode(resourceId: String?, text: String?, contentDescription: String?, timeoutMs: Long, resourceIdOccurrence: Int? = null, preferLastDuplicate: Boolean = false, action: Map<String, String>? = null): AccessibilityNodeInfo? {

@@ -85,8 +85,28 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     for (index in 0 until actions.size()) {
       val item = actions.getMap(index) ?: continue
       val map = mutableMapOf<String, String>()
-      for (key in listOf("action", "surface", "role", "text", "resourceId", "resourceIdOccurrence", "contentDescription", "fieldKey", "value", "screenTitle")) {
-        if (item.hasKey(key) && !item.isNull(key)) map[key] = item.getDynamic(key).asString() ?: ""
+      for (key in listOf(
+        "action",
+        "surface",
+        "role",
+        "text",
+        "resourceId",
+        "resourceIdOccurrence",
+        "contentDescription",
+        "fieldKey",
+        "value",
+        "screenTitle",
+        "selectorKind",
+        "editable",
+        "clickable",
+        "scrollable",
+        "enabled",
+        "nodeClass",
+        "parentClass",
+        "parentSelectorKind",
+        "parentText",
+      )) {
+        if (item.hasKey(key) && !item.isNull(key)) map[key] = dynamicToString(item.getDynamic(key))
       }
       mapped.add(map)
     }
@@ -134,5 +154,11 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     is JSONArray -> toList()
     JSONObject.NULL -> null
     else -> this
+  }
+  private fun dynamicToString(dynamic: Dynamic): String = when (dynamic.type) {
+    ReadableType.Boolean -> dynamic.asBoolean().toString()
+    ReadableType.Number -> dynamic.asDouble().toString()
+    ReadableType.String -> dynamic.asString() ?: ""
+    else -> ""
   }
 }
