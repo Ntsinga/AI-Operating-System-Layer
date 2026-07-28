@@ -26,20 +26,38 @@ class LearningWatcherService : AccessibilityService() {
       val targetSurface = prefs.getString(TARGET_SURFACE, "") ?: ""
       if (targetSurface.isNotBlank() && surface != targetSurface) return
       if (targetSurface.isBlank() && (surface == packageName || surface == "com.android.settings")) return
+      val actionType = when (event.eventType) {
+        AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
+        AccessibilityEvent.TYPE_VIEW_FOCUSED -> "focus"
+        AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "text_input"
+        AccessibilityEvent.TYPE_VIEW_SCROLLED -> "scroll"
+        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+        AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "screen_transition"
+        else -> "observe"
+      }
+      val activeRootPackage = rootInActiveWindow?.packageName?.toString() ?: ""
+      if (targetSurface.isNotBlank() &&
+        actionType in listOf("screen_transition", "observe") &&
+        activeRootPackage.isNotBlank() &&
+        activeRootPackage != targetSurface
+      ) {
+        Log.i("AIOS.Learning", JSONObject()
+          .put("event", "recording_event_skipped")
+          .put("reason", "target_not_frontmost")
+          .put("eventSurface", surface)
+          .put("activeRootSurface", activeRootPackage)
+          .put("targetSurface", targetSurface)
+          .put("action", actionType)
+          .toString()
+        )
+        return
+      }
       val action = JSONObject()
         .put("schemaVersion", 2)
         .put("surface", surface)
         .put("role", event.className?.toString() ?: "")
-        .put("action", when (event.eventType) {
-          AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
-          AccessibilityEvent.TYPE_VIEW_FOCUSED -> "focus"
-          AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "text_input"
-          AccessibilityEvent.TYPE_VIEW_SCROLLED -> "scroll"
-          AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-          AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "screen_transition"
-          else -> "observe"
-        })
+        .put("action", actionType)
       val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null else event.text?.firstOrNull()?.toString()
       if (!label.isNullOrBlank()) action.put("text", label.take(120))
       event.source?.let { node ->
@@ -47,7 +65,7 @@ class LearningWatcherService : AccessibilityService() {
           action.put("resourceId", resourceId)
           if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
             rootInActiveWindow?.let { root ->
-              resourceOccurrenceIndex(root, node, resourceId)?.let { occurrence ->
+              if (root.packageName?.toString() == surface) resourceOccurrenceIndex(root, node, resourceId)?.let { occurrence ->
                 action.put("resourceIdOccurrence", occurrence.toString())
               }
             }
@@ -80,10 +98,16 @@ class LearningWatcherService : AccessibilityService() {
         node.recycle()
       }
       rootInActiveWindow?.let { root ->
-        val snapshot = screenSnapshot(root, surface)
-        action.put("screen", snapshot)
-        snapshot.optString("title").takeIf { it.isNotBlank() }?.let { action.put("screenTitle", it.take(120)) }
-        if (action.optString("action") == "screen_transition" && shouldSkipDuplicateScreen(surface, snapshot)) return
+        val rootSurface = root.packageName?.toString() ?: ""
+        if (rootSurface == surface) {
+          val snapshot = screenSnapshot(root, surface)
+          action.put("screen", snapshot)
+          snapshot.optString("title").takeIf { it.isNotBlank() }?.let { action.put("screenTitle", it.take(120)) }
+          if (action.optString("action") == "screen_transition" && shouldSkipDuplicateScreen(surface, snapshot)) return
+        } else {
+          action.put("activeRootSurface", rootSurface)
+          if (actionType in listOf("screen_transition", "observe")) return
+        }
       }
       synchronized(QUEUE_LOCK) {
         val queue = readRecordedQueue(prefs.getString(QUEUE, "[]"))
@@ -171,13 +195,14 @@ class LearningWatcherService : AccessibilityService() {
         val key = action["resourceId"] ?: action["fieldKey"] ?: action["text"] ?: action["contentDescription"]
         val value = key?.let { values[it] } ?: action["value"]
         val occurrence = action["resourceIdOccurrence"]?.toIntOrNull()
-        val node = waitForNode(
+        val node = waitForReadyNode(
           action["resourceId"] ?: action["fieldKey"],
           null,
           action["contentDescription"],
-          4500,
+          7000,
           resourceIdOccurrence = occurrence,
           preferLastDuplicate = occurrence == null,
+          action = action,
         )
         addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
         if (node == null) {
@@ -191,6 +216,7 @@ class LearningWatcherService : AccessibilityService() {
           node.recycle()
           continue
         }
+        addTrace("target_ready_before_text", details = mapOf("fieldKey" to key, "visibleTexts" to currentVisibleTexts(), "frontWindows" to frontWindowSummary()))
         val focusActivation = performFocus(node)
         Thread.sleep(FOCUS_SETTLE_BEFORE_TYPING_MS)
         addTrace("focus_settle_before_text", details = mapOf("waitMs" to FOCUS_SETTLE_BEFORE_TYPING_MS, "fieldKey" to key, "focusActivated" to focusActivation, "visibleTexts" to currentVisibleTexts()))
@@ -526,6 +552,46 @@ class LearningWatcherService : AccessibilityService() {
     return null
   }
 
+  private fun waitForReadyNode(resourceId: String?, text: String?, contentDescription: String?, timeoutMs: Long, resourceIdOccurrence: Int? = null, preferLastDuplicate: Boolean = false, action: Map<String, String>? = null): AccessibilityNodeInfo? {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var stableSamples = 0
+    var lastBounds: Rect? = null
+    while (System.currentTimeMillis() < deadline) {
+      rootInActiveWindow?.let { root ->
+        val node = findNode(root, resourceId, text, contentDescription, resourceIdOccurrence, preferLastDuplicate, action)
+        if (node != null) {
+          val rect = Rect()
+          node.getBoundsInScreen(rect)
+          val stableBounds = lastBounds?.let { boundsCloseEnough(it, rect) } ?: true
+          lastBounds = Rect(rect)
+          val ready = node.isVisibleToUser &&
+            node.isEnabled &&
+            rect.width() > 0 &&
+            rect.height() > 0 &&
+            stableBounds &&
+            !targetObscuredByForegroundWindow(node)
+          if (ready) {
+            stableSamples++
+            if (stableSamples >= TARGET_READY_STABLE_SAMPLES) return node
+          } else {
+            stableSamples = 0
+          }
+          node.recycle()
+        } else {
+          stableSamples = 0
+        }
+      }
+      Thread.sleep(TARGET_READY_POLL_MS)
+    }
+    return null
+  }
+
+  private fun boundsCloseEnough(a: Rect, b: Rect): Boolean =
+    kotlin.math.abs(a.left - b.left) <= 3 &&
+      kotlin.math.abs(a.top - b.top) <= 3 &&
+      kotlin.math.abs(a.right - b.right) <= 3 &&
+      kotlin.math.abs(a.bottom - b.bottom) <= 3
+
   private fun waitForScreen(title: String?, timeoutMs: Long): Boolean {
     if (title.isNullOrBlank()) return true
     val wanted = title.trim().lowercase()
@@ -786,6 +852,42 @@ class LearningWatcherService : AccessibilityService() {
     latch.await(GESTURE_TAP_WAIT_MS, TimeUnit.MILLISECONDS)
     return completed
   }
+
+  private fun targetObscuredByForegroundWindow(node: AccessibilityNodeInfo): Boolean {
+    val surface = node.packageName?.toString() ?: return false
+    val targetRect = Rect()
+    node.getBoundsInScreen(targetRect)
+    for (window in windows.sortedByDescending { it.layer }) {
+      val root = window.root ?: continue
+      val packageName = root.packageName?.toString() ?: ""
+      val bounds = Rect()
+      root.getBoundsInScreen(bounds)
+      val intersects = Rect.intersects(bounds, targetRect)
+      root.recycle()
+      if (!intersects) continue
+      if (packageName == surface || isKeyboardOrSystemUi(packageName)) continue
+      return true
+    }
+    return false
+  }
+
+  private fun isKeyboardOrSystemUi(packageName: String): Boolean {
+    val lower = packageName.lowercase()
+    return lower.contains("inputmethod") ||
+      lower.contains("keyboard") ||
+      lower == "com.android.systemui" ||
+      lower.contains("honeyboard")
+  }
+
+  private fun frontWindowSummary(): List<String> =
+    windows.sortedByDescending { it.layer }
+      .take(4)
+      .mapNotNull { window ->
+        val root = window.root ?: return@mapNotNull null
+        val summary = "${window.layer}:${root.packageName ?: ""}:${root.className ?: ""}"
+        root.recycle()
+        summary
+      }
   private fun performScroll(node: AccessibilityNodeInfo): Boolean {
     actionableScrollNode(node)?.let { target ->
       val ok = target.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
@@ -926,6 +1028,8 @@ class LearningWatcherService : AccessibilityService() {
     private const val FOCUS_SETTLE_BEFORE_TYPING_MS = 1000L
     private const val GESTURE_TAP_DURATION_MS = 80L
     private const val GESTURE_TAP_WAIT_MS = 800L
+    private const val TARGET_READY_POLL_MS = 160L
+    private const val TARGET_READY_STABLE_SAMPLES = 3
     private const val MAX_TEXT_CHARS = 90
     private const val MAX_ID_CHARS = 140
     val QUEUE_LOCK = Any()
