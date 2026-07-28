@@ -10,7 +10,7 @@ Start here:
 
 The first implementation milestone is intentionally small: create the mobile app, build a Kotlin native bridge, and display installed Android apps from React Native.
 
-## Project command
+## Project Commands
 
 Send `#start` in Codex to run the project startup workflow. It starts the backend, waits for its health endpoint, then builds and launches Android. The underlying command is:
 
