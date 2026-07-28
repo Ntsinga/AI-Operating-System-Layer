@@ -1,6 +1,8 @@
 package com.aioperatingsystem
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.graphics.Rect
 import android.text.InputType
 import android.util.Log
@@ -9,6 +11,8 @@ import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Consent-gated semantic recorder. It stores labels/roles only, never screenshots or passwords. */
 class LearningWatcherService : AccessibilityService() {
@@ -187,11 +191,9 @@ class LearningWatcherService : AccessibilityService() {
           node.recycle()
           continue
         }
-        performClick(node)
-        Thread.sleep(260)
-        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val focusActivation = performFocus(node)
         Thread.sleep(FOCUS_SETTLE_BEFORE_TYPING_MS)
-        addTrace("focus_settle_before_text", details = mapOf("waitMs" to FOCUS_SETTLE_BEFORE_TYPING_MS, "fieldKey" to key, "visibleTexts" to currentVisibleTexts()))
+        addTrace("focus_settle_before_text", details = mapOf("waitMs" to FOCUS_SETTLE_BEFORE_TYPING_MS, "fieldKey" to key, "focusActivated" to focusActivation, "visibleTexts" to currentVisibleTexts()))
         val ok = typeTextIncrementally(action, value)
         if (ok) {
           val attempted = "set_text_incremental"
@@ -746,10 +748,43 @@ class LearningWatcherService : AccessibilityService() {
     return false
   }
   private fun performFocus(node: AccessibilityNodeInfo): Boolean {
-    val clickOk = if (node.isClickable || actionableClickNode(node) != null) performClick(node) else false
+    val gestureOk = performGestureTap(node)
+    Thread.sleep(180)
+    val clickOk = if (!gestureOk && (node.isClickable || actionableClickNode(node) != null)) performClick(node) else false
     Thread.sleep(180)
     val focusOk = node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-    return clickOk || focusOk
+    return gestureOk || clickOk || focusOk
+  }
+
+  private fun performGestureTap(node: AccessibilityNodeInfo): Boolean {
+    val rect = Rect()
+    node.getBoundsInScreen(rect)
+    if (rect.width() <= 0 || rect.height() <= 0) return false
+    val x = rect.centerX().toFloat()
+    val y = rect.centerY().toFloat()
+    val path = Path().apply { moveTo(x, y) }
+    val gesture = GestureDescription.Builder()
+      .addStroke(GestureDescription.StrokeDescription(path, 0, GESTURE_TAP_DURATION_MS))
+      .build()
+    val latch = CountDownLatch(1)
+    var completed = false
+    val dispatched = dispatchGesture(
+      gesture,
+      object : GestureResultCallback() {
+        override fun onCompleted(gestureDescription: GestureDescription?) {
+          completed = true
+          latch.countDown()
+        }
+        override fun onCancelled(gestureDescription: GestureDescription?) {
+          completed = false
+          latch.countDown()
+        }
+      },
+      null
+    )
+    if (!dispatched) return false
+    latch.await(GESTURE_TAP_WAIT_MS, TimeUnit.MILLISECONDS)
+    return completed
   }
   private fun performScroll(node: AccessibilityNodeInfo): Boolean {
     actionableScrollNode(node)?.let { target ->
@@ -889,6 +924,8 @@ class LearningWatcherService : AccessibilityService() {
     private const val MAX_SCREEN_VISIBLE_TEXTS = 16
     private const val MAX_SCREEN_ELEMENTS = 14
     private const val FOCUS_SETTLE_BEFORE_TYPING_MS = 1500L
+    private const val GESTURE_TAP_DURATION_MS = 80L
+    private const val GESTURE_TAP_WAIT_MS = 800L
     private const val MAX_TEXT_CHARS = 90
     private const val MAX_ID_CHARS = 140
     val QUEUE_LOCK = Any()
