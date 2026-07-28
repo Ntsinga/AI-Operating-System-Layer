@@ -192,13 +192,13 @@ class LearningWatcherService : AccessibilityService() {
           if (screenReady) "info" else "warn",
           mapOf("visibleTexts" to currentVisibleTexts())
         )
-        val key = action["resourceId"] ?: action["fieldKey"] ?: action["text"] ?: action["contentDescription"]
+        val key = action["resourceId"] ?: action["contentDescription"] ?: action["fieldKey"] ?: action["text"]
         val value = key?.let { values[it] } ?: action["value"]
         val occurrence = action["resourceIdOccurrence"]?.toIntOrNull()
         val node = waitForReadyNode(
-          action["resourceId"] ?: action["fieldKey"],
-          null,
-          action["contentDescription"],
+          replayResourceIdSelector(action),
+          replayTextSelector(action),
+          replayContentDescriptionSelector(action),
           7000,
           resourceIdOccurrence = occurrence,
           preferLastDuplicate = occurrence == null,
@@ -272,7 +272,14 @@ class LearningWatcherService : AccessibilityService() {
         addTrace("step_skipped", "warn", mapOf("reason" to "no_matching_post_text_selection_target", "query" to queryValueBeforeNodeSearch, "visibleTexts" to currentVisibleTexts()))
         continue
       }
-      val node = waitForNode(action["resourceId"], action["text"], action["contentDescription"], 4500, resourceIdOccurrence = action["resourceIdOccurrence"]?.toIntOrNull(), action = action)
+      val node = waitForNode(
+        replayResourceIdSelector(action),
+        replayTextSelector(action),
+        replayContentDescriptionSelector(action),
+        4500,
+        resourceIdOccurrence = action["resourceIdOccurrence"]?.toIntOrNull(),
+        action = action,
+      )
       addTrace("step_started", details = mapOf("rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
       if (node == null) {
         val queryValue = lastTextInputValue?.takeIf { query ->
@@ -333,6 +340,22 @@ class LearningWatcherService : AccessibilityService() {
     listOf("surface", "resourceId", "resourceIdOccurrence", "text", "contentDescription", "fieldKey", "screenTitle", "selectorKind", "nodeClass", "parentSelectorKind").mapNotNull { key ->
       action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
     }.toMap()
+
+  private fun isEditableFieldAction(action: Map<String, String>?): Boolean =
+    action?.get("selectorKind") == "editable_field" || action?.get("editable") == "true"
+
+  private fun replayResourceIdSelector(action: Map<String, String>): String? =
+    action["resourceId"]?.takeIf { it.isNotBlank() }
+
+  private fun replayContentDescriptionSelector(action: Map<String, String>): String? =
+    action["contentDescription"]?.takeIf { it.isNotBlank() }
+
+  private fun replayTextSelector(action: Map<String, String>): String? {
+    if (isEditableFieldAction(action) && action["resourceId"].isNullOrBlank() && action["contentDescription"].isNullOrBlank()) {
+      return null
+    }
+    return action["text"]?.takeIf { it.isNotBlank() }
+  }
 
   private fun hasLaterTextInputForSameTarget(actions: List<Map<String, String>>, index: Int): Boolean {
     val current = actions[index]
@@ -398,12 +421,13 @@ class LearningWatcherService : AccessibilityService() {
     if (wanted.isBlank()) return false
     val occurrence = action["resourceIdOccurrence"]?.toIntOrNull()
     val node = waitForNode(
-      action["resourceId"] ?: action["fieldKey"],
-      null,
-      action["contentDescription"],
+      replayResourceIdSelector(action),
+      replayTextSelector(action),
+      replayContentDescriptionSelector(action),
       2200,
       resourceIdOccurrence = occurrence,
       preferLastDuplicate = occurrence == null,
+      action = action,
     ) ?: return false
     return try {
       node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
@@ -730,6 +754,9 @@ class LearningWatcherService : AccessibilityService() {
     }
   }
   private fun findNode(root: AccessibilityNodeInfo, resourceId: String?, text: String?, contentDescription: String?, resourceIdOccurrence: Int? = null, preferLastDuplicate: Boolean = false, action: Map<String, String>? = null): AccessibilityNodeInfo? {
+    if (resourceId.isNullOrBlank() && text.isNullOrBlank() && contentDescription.isNullOrBlank() && isEditableFieldAction(action)) {
+      findEditableFallback(root, action)?.let { return it }
+    }
     if (!resourceId.isNullOrBlank()) {
       val candidates = root.findAccessibilityNodeInfosByViewId(resourceId)
       if (resourceIdOccurrence != null && resourceIdOccurrence >= 0 && resourceIdOccurrence < candidates.size) {
@@ -749,6 +776,18 @@ class LearningWatcherService : AccessibilityService() {
     // content descriptions, or the semantic class. Walk the current tree instead of replaying
     // stale coordinates.
     return findSemanticFallback(root, text, contentDescription, action)
+  }
+
+  private fun findEditableFallback(node: AccessibilityNodeInfo, action: Map<String, String>? = null): AccessibilityNodeInfo? {
+    if (node.isEditable && node.isEnabled && node.isVisibleToUser && selectorShapeMatches(node, action)) return node
+    for (index in 0 until node.childCount) {
+      node.getChild(index)?.let { child ->
+        val match = findEditableFallback(child, action)
+        if (match != null) return match
+        child.recycle()
+      }
+    }
+    return null
   }
   private fun resourceOccurrenceIndex(root: AccessibilityNodeInfo, target: AccessibilityNodeInfo, resourceId: String): Int? {
     val candidates = root.findAccessibilityNodeInfosByViewId(resourceId)
