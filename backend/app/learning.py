@@ -16,6 +16,8 @@ from app.debug_events import record_event
 
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.learning")
+MAX_ACTIONS_JSON_CHARS = 50000
+MAX_ACTIONS = 80
 
 
 def _record_learning_event(**kwargs: Any) -> None:
@@ -25,6 +27,26 @@ def _record_learning_event(**kwargs: Any) -> None:
         # Debug traces are diagnostic only. They must never prevent teaching or
         # replay from working, especially during schema migrations on Render.
         logger.warning("learning_debug_event_failed event=%s", kwargs.get("event"), exc_info=True)
+
+
+def _compact_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep session JSON valid without blindly truncating it.
+
+    Prefer preserving actionable steps. If a session gets too large, drop older
+    observe/scroll noise first, then oldest actions only as a last resort.
+    """
+    compacted = list(actions[-MAX_ACTIONS:])
+    while len(json.dumps(compacted, default=str)) > MAX_ACTIONS_JSON_CHARS and len(compacted) > 1:
+        removable_index = next(
+            (
+                index
+                for index, action in enumerate(compacted)
+                if action.get("action") in {"observe", "scroll"}
+            ),
+            0,
+        )
+        compacted.pop(removable_index)
+    return compacted
 
 
 def _db() -> sqlite3.Connection:
@@ -81,7 +103,8 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
         # Keep semantic selectors and omit screenshots, passwords, and arbitrary payloads.
         safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "fieldKey", "action", "value", "screen", "clickable", "enabled") if key in action}
         actions.append(safe)
-        execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions)[:50000], session_id))
+        actions = _compact_actions(actions)
+        execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions, default=str), session_id))
     logger.info("learning_action_appended session=%s action_count=%d action=%s", session_id, len(actions), safe.get("action", ""))
     _record_learning_event(
         trace_id=session_id,

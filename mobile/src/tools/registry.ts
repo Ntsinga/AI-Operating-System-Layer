@@ -661,15 +661,27 @@ function procedureHasRealReplayAction(procedure: { steps: Array<{ arguments?: Re
   });
 }
 
+function replayProcedureScore(procedure: { steps: Array<{ arguments?: Record<string, unknown> }> }) {
+  const actions = procedure.steps.map((step) => String(step.arguments?.action ?? ''));
+  const tapCount = actions.filter((action) => action === 'tap').length;
+  const textCount = actions.filter((action) => action === 'text_input').length;
+  const firstTextIndex = actions.findIndex((action) => action === 'text_input');
+  const tapsBeforeTyping = firstTextIndex >= 0
+    ? actions.slice(0, firstTextIndex).filter((action) => action === 'tap').length
+    : tapCount;
+  const actionableCount = tapCount + textCount;
+  return tapsBeforeTyping * 1000 + tapCount * 100 + actionableCount * 10 + Math.min(procedure.steps.length, 9);
+}
+
 function chooseReplayProcedure<T extends { id: number; scope: string; state: string; steps: Array<{ arguments?: Record<string, unknown> }> }>(selected: T, procedures: T[]) {
-  if (procedureHasRealReplayAction(selected)) return selected;
-  return procedures
+  const candidates = procedures
     .filter((candidate) => candidate.state === 'approved' && candidate.scope === selected.scope && procedureHasRealReplayAction(candidate))
     .sort((left, right) => {
-      const rightActions = right.steps.filter((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? ''))).length;
-      const leftActions = left.steps.filter((step) => ['tap', 'text_input'].includes(String(step.arguments?.action ?? ''))).length;
-      return rightActions - leftActions || right.id - left.id;
-    })[0] ?? selected;
+      return replayProcedureScore(right) - replayProcedureScore(left) || right.id - left.id;
+    });
+  if (!procedureHasRealReplayAction(selected)) return candidates[0] ?? selected;
+  const best = candidates[0];
+  return best && replayProcedureScore(best) > replayProcedureScore(selected) ? best : selected;
 }
 
 export const replayLearnedProcedureTool = {

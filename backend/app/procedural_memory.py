@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - production requirements install crypto
 
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.procedural_memory")
+MAX_STEPS_JSON_CHARS = 50000
 
 
 def _db():
@@ -78,13 +79,28 @@ def _decode(value: str) -> str:
     return cipher.decrypt(value.encode()).decode() if cipher else value
 
 
+def _serialized_steps(steps: list[dict[str, Any]]) -> str:
+    compacted = list(steps)
+    while len(json.dumps(compacted, default=str, sort_keys=True)) > MAX_STEPS_JSON_CHARS and len(compacted) > 1:
+        removable_index = next(
+            (
+                index
+                for index, step in enumerate(compacted)
+                if step.get("arguments", {}).get("action") in {"observe", "scroll"}
+            ),
+            0,
+        )
+        compacted.pop(removable_index)
+    return json.dumps(compacted, default=str, sort_keys=True)
+
+
 def save_procedure(intent: str, history: list[dict[str, Any]], success: bool = True, scope: str = "local", outcome: str = "succeeded", state: str = "approved") -> None:
     """Store a versioned trace; encrypt the step payload when the production key is configured."""
     steps = [
         {"toolName": step.get("toolName"), "arguments": step.get("arguments", {})}
         for step in history
     ]
-    serialized = json.dumps(steps, default=str, sort_keys=True)[:50000]
+    serialized = _serialized_steps(steps)
     fingerprint = hashlib.sha256(f"{scope}:{intent.lower()}:{serialized}".encode()).hexdigest()
     logger.info("procedure_save_requested scope=%s outcome=%s state=%s steps=%d", scope[:80], outcome, state, len(steps))
     with _connection() as connection:
