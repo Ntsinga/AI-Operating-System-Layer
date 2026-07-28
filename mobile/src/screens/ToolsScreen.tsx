@@ -72,7 +72,7 @@ export function ToolsScreen() {
       <InputToolCard tool={navigateMapsTool} fields={[{ key: 'destination', label: 'Navigate to...' }]} />
       <InputToolCard
         tool={openPlayStoreListingTool}
-        fields={[{ key: 'packageName', label: 'Search installed apps', appPicker: true }]}
+        fields={[{ key: 'query', label: 'Search Play Store for an app...' }]}
       />
       <InputToolCard
         tool={sendSmsTool}

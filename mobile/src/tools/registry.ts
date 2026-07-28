@@ -57,7 +57,8 @@ export type NavigateMapsInput = {
 };
 
 export type OpenPlayStoreListingInput = {
-  packageName: string;
+  packageName?: string;
+  query?: string;
 };
 
 export type SendSmsInput = {
@@ -490,18 +491,29 @@ export const navigateMapsTool = {
 export const openPlayStoreListingTool = {
   name: 'open_play_store_listing',
   description:
-    'Opens the Play Store listing page for a selected app, for the user to review and tap Install/Open themselves. Cannot install automatically - Android does not allow that for a normal app.',
+    'Opens Play Store for an app. Use packageName for a known exact app id, or query to search Play Store by app name. Cannot install automatically - Android does not allow that for a normal app.',
   parameters: {
     type: 'object',
     properties: {
-      packageName: { type: 'string', description: 'Internal Android package id selected by the app picker or planner.' },
+      packageName: { type: 'string', description: 'Optional exact Android package id, e.g. com.pinterest.' },
+      query: { type: 'string', description: 'Optional app name to search in Play Store, e.g. Pinterest.' },
     },
-    required: ['packageName'],
   },
-  execute: (input: OpenPlayStoreListingInput) =>
-    getDeepLinkModule().openUri(
-      `https://play.google.com/store/apps/details?id=${encodeURIComponent(input.packageName)}`
-    ),
+  execute: (input: OpenPlayStoreListingInput) => {
+    const packageName = input.packageName?.trim();
+    const query = input.query?.trim();
+    if (packageName) {
+      return getDeepLinkModule().openUri(
+        `https://play.google.com/store/apps/details?id=${encodeURIComponent(packageName)}`
+      );
+    }
+    if (query) {
+      return getDeepLinkModule().openUri(
+        `https://play.google.com/store/search?q=${encodeURIComponent(query)}&c=apps`
+      );
+    }
+    throw new Error('Enter an app name to search, or provide an exact app id.');
+  },
 } satisfies ToolDefinition<OpenPlayStoreListingInput, OpenUriResult>;
 
 export const sendSmsTool = {
