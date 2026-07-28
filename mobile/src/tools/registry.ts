@@ -109,13 +109,13 @@ export const getInstalledAppsTool = {
 
 export const openApplicationTool = {
   name: 'open_application',
-  description: 'Opens an installed Android application by its package name.',
+  description: 'Opens an installed Android application selected by the planner or app picker.',
   parameters: {
     type: 'object',
     properties: {
       packageName: {
         type: 'string',
-        description: 'The Android package name to launch, e.g. com.android.chrome.',
+        description: 'Internal Android package id selected from get_installed_apps, e.g. com.android.chrome.',
       },
     },
     required: ['packageName'],
@@ -191,14 +191,14 @@ export type OpenAppBatterySettingsInput = { packageName: string };
 export const openAppBatterySettingsTool = {
   name: 'open_app_battery_settings',
   description: 'Opens Android settings for an app so the user can review its battery/background controls. The user makes the final policy change.',
-  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Installed Android package name.' } }, required: ['packageName'] },
+  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Internal id of the selected installed app.' } }, required: ['packageName'] },
   execute: (input: OpenAppBatterySettingsInput) => getUsageStatsModule().openAppBatterySettings(input.packageName),
 } satisfies ToolDefinition<OpenAppBatterySettingsInput, AppBatterySettingsResult>;
 
 export const getBatteryOptimizationStatusTool = {
   name: 'get_battery_optimization_status',
   description: 'Checks whether Android battery optimization is being bypassed for an app. Read-only; normally optimized apps are safer for battery.',
-  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Exact installed package name from get_installed_apps.' } }, required: ['packageName'] },
+  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Internal id of the selected installed app from get_installed_apps.' } }, required: ['packageName'] },
   execute: (input: OpenAppBatterySettingsInput) => getUsageStatsModule().getBatteryOptimizationStatus(input.packageName),
 } satisfies ToolDefinition<OpenAppBatterySettingsInput, BatteryOptimizationStatus>;
 
@@ -244,7 +244,7 @@ export const setApplicationSuspendedTool = {
   parameters: {
     type: 'object',
     properties: {
-      packageName: { type: 'string', description: 'Installed Android package name.' },
+      packageName: { type: 'string', description: 'Internal id of the selected installed app.' },
       suspended: { type: 'boolean', description: 'True to block the app, false to restore it.' },
     },
     required: ['packageName', 'suspended'],
@@ -260,7 +260,7 @@ export const setApplicationsSuspendedTool = {
   parameters: {
     type: 'object',
     properties: {
-      packageNames: { type: 'array', description: 'Exact package names selected from get_installed_apps.' },
+      packageNames: { type: 'array', description: 'Internal app ids selected from get_installed_apps.' },
       suspended: { type: 'boolean', description: 'True to block the apps, false to restore them.' },
     },
     required: ['packageNames', 'suspended'],
@@ -285,7 +285,7 @@ export type StartFocusPolicyInput = { packageNames: string[]; durationMinutes: n
 export const startFocusPolicyTool = {
   name: 'start_focus_policy',
   description: 'Suspends a confirmed group of apps now and automatically restores them after durationMinutes, including when AI-OS is closed. Requires Device Owner.',
-  parameters: { type: 'object', properties: { packageNames: { type: 'array', description: 'Exact package names selected from get_installed_apps.' }, durationMinutes: { type: 'number', description: 'How long to block them, from 1 minute to 7 days.' } }, required: ['packageNames', 'durationMinutes'] },
+  parameters: { type: 'object', properties: { packageNames: { type: 'array', description: 'Internal app ids selected from get_installed_apps.' }, durationMinutes: { type: 'number', description: 'How long to block them, from 1 minute to 7 days.' } }, required: ['packageNames', 'durationMinutes'] },
   execute: (input: StartFocusPolicyInput) => getFocusPolicyModule().startFocus(input.packageNames, input.durationMinutes),
 } satisfies ToolDefinition<StartFocusPolicyInput, FocusPolicyResult>;
 
@@ -326,15 +326,15 @@ export const scheduleDateAlarmTool = {
 export type InspectAppInput = { packageName: string };
 export const inspectAppHealthTool = {
   name: 'inspect_app_health',
-  description: 'Inspects an installed app’s enabled state, version, system-app status, UID, and launchability. Read-only; use exact package names from get_installed_apps.',
-  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Exact installed Android package name.' } }, required: ['packageName'] },
+  description: 'Inspects a selected app’s enabled state, version, system-app status, UID, and launchability. Read-only.',
+  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Internal id of the selected installed app.' } }, required: ['packageName'] },
   execute: (input: InspectAppInput) => getAppHealthModule().inspect(input.packageName),
 } satisfies ToolDefinition<InspectAppInput, AppHealthResult>;
 
 export const openAppSettingsTool = {
   name: 'open_app_settings',
   description: 'Opens Android’s user-facing settings page for an app, where the user can review permissions, force stop, clear cache/data, and uninstall when allowed. Requires explicit confirmation.',
-  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Exact installed Android package name.' } }, required: ['packageName'] },
+  parameters: { type: 'object', properties: { packageName: { type: 'string', description: 'Internal id of the selected installed app.' } }, required: ['packageName'] },
   execute: (input: InspectAppInput) => getAppHealthModule().openSettings(input.packageName),
 } satisfies ToolDefinition<InspectAppInput, AppSettingsResult>;
 
@@ -490,11 +490,11 @@ export const navigateMapsTool = {
 export const openPlayStoreListingTool = {
   name: 'open_play_store_listing',
   description:
-    'Opens the Play Store listing page for the given Android package name, for the user to review and tap Install themselves. Cannot install automatically - Android does not allow that for a normal app.',
+    'Opens the Play Store listing page for a selected app, for the user to review and tap Install/Open themselves. Cannot install automatically - Android does not allow that for a normal app.',
   parameters: {
     type: 'object',
     properties: {
-      packageName: { type: 'string', description: 'The Android package name to view, e.g. com.spotify.music.' },
+      packageName: { type: 'string', description: 'Internal Android package id selected by the app picker or planner.' },
     },
     required: ['packageName'],
   },

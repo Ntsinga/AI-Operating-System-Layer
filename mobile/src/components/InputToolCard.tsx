@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { colors } from '../theme';
 import type { ToolDefinition } from '../tools/types';
+import { getAppManager, type InstalledApp } from '../native/AppManager';
 import { GradientButton } from './GradientButton';
 
 type Field = {
@@ -10,6 +11,7 @@ type Field = {
   label: string;
   placeholder?: string;
   numeric?: boolean;
+  appPicker?: boolean;
 };
 
 type InputToolCardProps = {
@@ -19,12 +21,43 @@ type InputToolCardProps = {
 
 export function InputToolCard({ tool, fields }: InputToolCardProps) {
   const [values, setValues] = useState<Record<string, string>>({});
+  const [appQueries, setAppQueries] = useState<Record<string, string>>({});
+  const [apps, setApps] = useState<InstalledApp[]>([]);
+  const [appsError, setAppsError] = useState<string | null>(null);
   const [result, setResult] = useState<unknown>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const needsApps = fields.some((field) => field.appPicker);
+
+  useEffect(() => {
+    if (!needsApps) return;
+    let cancelled = false;
+    getAppManager()
+      .getInstalledApps()
+      .then((installed) => {
+        if (!cancelled) setApps(installed.filter((app) => app.launchable));
+      })
+      .catch((err) => {
+        if (!cancelled) setAppsError(err instanceof Error ? err.message : 'Could not load apps.');
+      });
+    return () => { cancelled = true; };
+  }, [needsApps]);
 
   function setField(key: string, value: string) {
     setValues((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function selectApp(field: Field, app: InstalledApp) {
+    setField(field.key, app.packageName);
+    setAppQueries((prev) => ({ ...prev, [field.key]: app.name }));
+  }
+
+  function appMatches(field: Field) {
+    const query = (appQueries[field.key] ?? '').trim().toLowerCase();
+    if (!query) return apps.slice(0, 6);
+    return apps
+      .filter((app) => `${app.name} ${app.packageName}`.toLowerCase().includes(query))
+      .slice(0, 6);
   }
 
   async function run() {
@@ -56,7 +89,28 @@ export function InputToolCard({ tool, fields }: InputToolCardProps) {
         <Text style={styles.description}>{tool.description}</Text>
       </View>
 
-      {fields.map((field) => (
+      {fields.map((field) => field.appPicker ? (
+        <View key={field.key} style={styles.appPicker}>
+          <TextInput
+            style={styles.input}
+            placeholder={field.placeholder ?? field.label}
+            placeholderTextColor={colors.textMuted}
+            value={appQueries[field.key] ?? ''}
+            onChangeText={(text) => {
+              setAppQueries((prev) => ({ ...prev, [field.key]: text }));
+              setField(field.key, '');
+            }}
+            editable={!isLoading}
+          />
+          {values[field.key] ? <Text style={styles.selectedApp}>Selected app ready</Text> : null}
+          {appsError ? <Text style={styles.errorInline}>{appsError}</Text> : null}
+          {!values[field.key] ? appMatches(field).map((app) => (
+            <Pressable key={app.packageName} style={styles.appRow} onPress={() => selectApp(field, app)} disabled={isLoading}>
+              <Text style={styles.appName}>{app.name}</Text>
+            </Pressable>
+          )) : null}
+        </View>
+      ) : (
         <TextInput
           key={field.key}
           style={styles.input}
@@ -122,6 +176,34 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     minHeight: 46,
     paddingHorizontal: 12,
+  },
+  appPicker: {
+    marginBottom: 2,
+  },
+  appRow: {
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  appName: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  selectedApp: {
+    color: colors.positive,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  errorInline: {
+    color: colors.dangerText,
+    fontSize: 12,
+    marginBottom: 8,
   },
   runButton: {
     marginTop: 2,

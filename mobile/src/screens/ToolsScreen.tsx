@@ -2,7 +2,6 @@ import { ScrollView, StyleSheet } from 'react-native';
 
 import { AudioControlCard } from '../components/AudioControlCard';
 import { InputToolCard } from '../components/InputToolCard';
-import { InstalledAppsCard } from '../components/InstalledAppsCard';
 import { ImageSearchCard } from '../components/ImageSearchCard';
 import { JsonToolCard } from '../components/JsonToolCard';
 import { OverlayControlCard } from '../components/OverlayControlCard';
@@ -73,7 +72,7 @@ export function ToolsScreen() {
       <InputToolCard tool={navigateMapsTool} fields={[{ key: 'destination', label: 'Navigate to...' }]} />
       <InputToolCard
         tool={openPlayStoreListingTool}
-        fields={[{ key: 'packageName', label: 'Package name, e.g. com.spotify.music' }]}
+        fields={[{ key: 'packageName', label: 'Search installed apps', appPicker: true }]}
       />
       <InputToolCard
         tool={sendSmsTool}
@@ -89,9 +88,9 @@ export function ToolsScreen() {
       />
       <InputToolCard tool={searchWebTool} fields={[{ key: 'query', label: 'Search query' }]} />
       <InputToolCard tool={getAppUsageTool} fields={[{ key: 'hours', label: 'Usage lookback hours (1-168)', numeric: true }]} />
-      <InputToolCard tool={getBatteryOptimizationStatusTool} fields={[{ key: 'packageName', label: 'Installed app package name' }]} />
-      <InputToolCard tool={inspectAppHealthTool} fields={[{ key: 'packageName', label: 'Installed app package name' }]} />
-      <InputToolCard tool={openAppSettingsTool} fields={[{ key: 'packageName', label: 'Installed app package name' }]} />
+      <InputToolCard tool={getBatteryOptimizationStatusTool} fields={[{ key: 'packageName', label: 'Search installed apps', appPicker: true }]} />
+      <InputToolCard tool={inspectAppHealthTool} fields={[{ key: 'packageName', label: 'Search installed apps', appPicker: true }]} />
+      <InputToolCard tool={openAppSettingsTool} fields={[{ key: 'packageName', label: 'Search installed apps', appPicker: true }]} />
       <InputToolCard tool={getUpcomingEventsTool} fields={[{ key: 'hours', label: 'Calendar lookahead hours (1-168)', numeric: true }]} />
       <InputToolCard tool={runNetworkTestTool} fields={[{ key: 'samples', label: 'Network probes (1-5)', numeric: true }]} />
       <InputToolCard tool={setAlarmTool} fields={[{ key: 'hour', label: 'Hour (0-23)', numeric: true }, { key: 'minute', label: 'Minute (0-59)', numeric: true }, { key: 'label', label: 'Alarm label' }]} />
@@ -106,8 +105,6 @@ export function ToolsScreen() {
       {jsonTools.map((tool) => (
         <JsonToolCard key={tool.name} tool={tool} />
       ))}
-
-      <InstalledAppsCard />
     </ScrollView>
   );
 }
