@@ -59,6 +59,23 @@ export function LearnedProceduresCard() {
     const traceId = `replay-${procedure.id}-${Date.now()}`;
     try {
       const values = JSON.parse(runtimeValues) as Record<string, string>;
+      await recordDebugEvents([{
+        traceId,
+        flow: 'replay',
+        event: 'procedure_selected',
+        level: procedure.id === selectedProcedure.id ? 'info' : 'warn',
+        procedureId: procedure.id,
+        details: {
+          requestedProcedureId: selectedProcedure.id,
+          selectedProcedureId: procedure.id,
+          fallbackUsed: procedure.id !== selectedProcedure.id,
+          requestedIntent: selectedProcedure.intent,
+          selectedIntent: procedure.intent,
+          requestedActions: selectedProcedure.steps.map((step) => String(step.arguments?.action ?? '')),
+          selectedActions: procedure.steps.map((step) => String(step.arguments?.action ?? '')),
+          reason: procedure.id === selectedProcedure.id ? 'selected_procedure_is_replayable' : 'selected_a_more_navigable_procedure_for_same_app',
+        },
+      }]).catch(() => undefined);
       const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
       const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values, undefined, targetSurface);
       await recordDebugEvents((result.trace ?? []).map((event) => ({

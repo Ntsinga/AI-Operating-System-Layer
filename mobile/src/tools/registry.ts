@@ -703,6 +703,23 @@ export const replayLearnedProcedureTool = {
     if (!selectedProcedure) throw new Error(`Learned procedure ${input.procedureId} was not found.`);
     if (selectedProcedure.state !== 'approved') throw new Error('Only approved learned procedures can be replayed.');
     const procedure = chooseReplayProcedure(selectedProcedure, procedures);
+    await recordDebugEvents([{
+      traceId,
+      flow: 'replay',
+      event: 'procedure_selected',
+      level: procedure.id === selectedProcedure.id ? 'info' : 'warn',
+      procedureId: procedure.id,
+      details: {
+        requestedProcedureId: selectedProcedure.id,
+        selectedProcedureId: procedure.id,
+        fallbackUsed: procedure.id !== selectedProcedure.id,
+        requestedIntent: selectedProcedure.intent,
+        selectedIntent: procedure.intent,
+        requestedActions: selectedProcedure.steps.map((step) => String(step.arguments?.action ?? '')),
+        selectedActions: procedure.steps.map((step) => String(step.arguments?.action ?? '')),
+        reason: procedure.id === selectedProcedure.id ? 'selected_procedure_is_replayable' : 'selected_a_more_navigable_procedure_for_same_app',
+      },
+    }]).catch(() => undefined);
     const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
     const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector, targetSurface);
     await recordDebugEvents((result.trace ?? []).map((event) => ({
