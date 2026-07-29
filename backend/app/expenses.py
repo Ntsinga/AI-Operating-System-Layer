@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from app.google_api import gmail_read, gmail_search
@@ -36,14 +36,26 @@ def _best_amount(text: str) -> tuple[str, float] | None:
 
 def _category(text: str) -> str:
     value = text.lower()
-    for name, words in (("Food", ("food", "restaurant", "cafe", "lunch", "dinner")), ("Transport", ("uber", "fuel", "taxi", "transport")), ("Housing", ("rent", "utility", "electricity")), ("Software", ("subscription", "software", "hosting")), ("Travel", ("hotel", "flight", "travel"))):
+    for name, words in (
+        ("Mobile Money", ("momo", "mobile money", "airtel money", "wallet transfer")),
+        ("Banking", ("bank", "atm", "withdrawal", "loan", "overdraft")),
+        ("Food", ("food", "restaurant", "cafe", "lunch", "dinner")),
+        ("Transport", ("uber", "fuel", "taxi", "transport")),
+        ("Housing", ("rent", "utility", "electricity")),
+        ("Software", ("subscription", "software", "hosting")),
+        ("Travel", ("hotel", "flight", "travel")),
+    ):
         if any(word in value for word in words): return name
     return "Other"
 
 
-async def monthly_finances(year: int, month: int) -> dict[str, Any]:
-    start = date(year, month, 1)
-    end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+async def monthly_finances(year: int, month: int, day: int | None = None) -> dict[str, Any]:
+    if day:
+        start = date(year, month, day)
+        end = start + timedelta(days=1)
+    else:
+        start = date(year, month, 1)
+        end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
     after = start.strftime("%Y/%m/%d"); before = end.strftime("%Y/%m/%d")
     expense_ids = await gmail_search(f"after:{after} before:{before} (receipt OR invoice OR payment OR expense)", 25)
     revenue_ids = await gmail_search(f"after:{after} before:{before} (revenue OR income OR salary OR paid OR deposit)", 25)

@@ -21,6 +21,20 @@ BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_IMAGE_SEARCH_URL = "https://api.search.brave.com/res/v1/images/search"
 
 
+def _raise_with_brave_detail(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as error:
+        # Brave returns a structured {"error": {...}} body on 4xx/5xx - the bare httpx message
+        # (just status + URL) hides the actual reason (e.g. an invalid/expired subscription
+        # token), which made this endpoint impossible to diagnose from the client-visible error.
+        try:
+            detail = response.json()
+        except ValueError:
+            detail = response.text
+        raise httpx.HTTPStatusError(f"{error}. Brave response: {detail}", request=error.request, response=error.response) from None
+
+
 def search_web(query: str, count: int = 5) -> list[dict[str, Any]]:
     api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
     if not api_key:
@@ -29,10 +43,10 @@ def search_web(query: str, count: int = 5) -> list[dict[str, Any]]:
     response = httpx.get(
         BRAVE_SEARCH_URL,
         params={"q": query, "count": count},
-        headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+        headers={"Accept": "application/json", "Accept-Encoding": "gzip", "Cache-Control": "no-cache", "X-Subscription-Token": api_key},
         timeout=10.0,
     )
-    response.raise_for_status()
+    _raise_with_brave_detail(response)
 
     results = response.json().get("web", {}).get("results", [])
     return [
@@ -53,10 +67,10 @@ def search_images(query: str, count: int = 12) -> list[dict[str, Any]]:
     response = httpx.get(
         BRAVE_IMAGE_SEARCH_URL,
         params={"q": query, "count": min(max(count, 1), 20), "safesearch": "strict"},
-        headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+        headers={"Accept": "application/json", "Accept-Encoding": "gzip", "Cache-Control": "no-cache", "X-Subscription-Token": api_key},
         timeout=15.0,
     )
-    response.raise_for_status()
+    _raise_with_brave_detail(response)
 
     results = response.json().get("results", [])
     normalized: list[dict[str, Any]] = []

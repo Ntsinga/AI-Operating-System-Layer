@@ -218,6 +218,7 @@ async def google_calendar_create(req: CalendarCreateRequest) -> dict[str, Any]:
 class MonthlyFinanceRequest(BaseModel):
     year: int
     month: int
+    day: int | None = None
 
 class FinanceAnalysisRequest(BaseModel):
     finances: dict[str, Any]
@@ -225,12 +226,13 @@ class FinanceAnalysisRequest(BaseModel):
 class SmsFinanceRequest(BaseModel):
     year: int
     month: int
+    day: int | None = None
     messages: list[dict[str, Any]]
 
 
 @app.post("/expenses/month")
 async def expenses_month(req: MonthlyFinanceRequest) -> dict[str, Any]:
-    try: return await monthly_finances(req.year, req.month)
+    try: return await monthly_finances(req.year, req.month, req.day)
     except (RuntimeError, httpx.HTTPError, ValueError) as error: raise HTTPException(400, str(error))
 
 
@@ -239,7 +241,14 @@ def expenses_analyze(req: FinanceAnalysisRequest) -> dict[str, str]:
     import os, json
     from openai import OpenAI
     if not os.getenv("OPENAI_API_KEY"): raise HTTPException(503, "OPENAI_API_KEY is not configured.")
-    response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).chat.completions.create(model="gpt-4o-mini", messages=[{"role": "system", "content": "Analyze this personal finance summary concisely. Mention category concentration, revenue vs expenses, anomalies, and one practical next step. Do not give regulated financial advice."}, {"role": "user", "content": json.dumps(req.finances)}])
+    response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=120,
+        messages=[
+            {"role": "system", "content": "Summarize this personal finance data in at most 3 short bullet points (under 12 words each): top category, revenue vs expenses, one practical next step. No headers, no preamble, no regulated financial advice."},
+            {"role": "user", "content": json.dumps(req.finances)},
+        ],
+    )
     return {"analysis": response.choices[0].message.content or "No analysis returned."}
 
 
@@ -251,7 +260,7 @@ async def expenses_receipt(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @app.post("/expenses/sms")
 def expenses_sms(req: SmsFinanceRequest) -> dict[str, Any]:
-    return sms_finances(req.messages, req.year, req.month)
+    return sms_finances(req.messages, req.year, req.month, req.day)
 
 
 class StartWorkflowRequest(BaseModel):
