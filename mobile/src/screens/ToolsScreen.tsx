@@ -33,13 +33,11 @@ import {
   openUrlExternalTool,
   openUrlInAiosBrowserTool,
   openWebSearchTool,
-  recordVideoTool,
   searchWebTool,
   searchYoutubeTool,
   setWallpaperTool,
   sendSmsTool,
   setScreenBrightnessTool,
-  takePhotoTool,
   setAlarmTool,
   inspectAppHealthTool,
   openAppSettingsTool,
@@ -47,7 +45,10 @@ import {
   connectGoogleAccountTool,
 } from '../tools/registry';
 
-const jsonTools = [getDeviceInfoTool, getStorageInfoTool, diagnoseNetworkTool, openWifiSettingsTool, openNetworkSettingsTool, diagnoseBatteryTool, getDevicePolicyStatusTool, openBatteryOptimizationSettingsTool, connectGoogleAccountTool, getCurrentLocationTool, getContactsTool, takePhotoTool, recordVideoTool];
+// take_photo/record_video are intentionally absent here: they now run from the overlay
+// bubble's quick-action menu (OverlayService.kt) instead of a manual tool card, but they stay
+// registered in tools/registry.ts so the AI planner can still call them.
+const jsonTools = [getDeviceInfoTool, getStorageInfoTool, diagnoseNetworkTool, openWifiSettingsTool, openNetworkSettingsTool, diagnoseBatteryTool, getDevicePolicyStatusTool, openBatteryOptimizationSettingsTool, connectGoogleAccountTool, getCurrentLocationTool, getContactsTool];
 
 // The "Tools" tab: every individual capability as its own runnable card. The
 // conversational assistant lives on the separate Chat tab.

@@ -5,7 +5,7 @@ from typing import Any, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -119,13 +119,35 @@ def connect_google_start() -> RedirectResponse:
         raise HTTPException(503, str(error))
 
 
+def _app_redirect_page(status: str, message: str) -> HTMLResponse:
+    from urllib.parse import urlencode
+
+    target = "aios://google-connected?" + urlencode({"status": status, "message": message})
+    body = (
+        "Google account connected. Returning to AI-OS..."
+        if status == "success"
+        else f"Google connection failed: {message}"
+    )
+    # The `aios` scheme is registered on MainActivity (android:scheme="aios" in
+    # AndroidManifest.xml) with no host restriction, so any aios://... URL brings the app back
+    # to the foreground - meta-refresh covers browsers that block synchronous JS redirects to
+    # custom schemes, the visible link covers ones that block both.
+    html = f"""<!doctype html><html><head><meta http-equiv="refresh" content="0;url={target}">
+    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="font-family:sans-serif;text-align:center;padding-top:48px;color:#333;">
+    <p>{body}</p>
+    <p><a href="{target}">Tap here if you are not returned to AI-OS automatically.</a></p>
+    </body></html>"""
+    return HTMLResponse(html)
+
+
 @app.get("/connect/google/callback")
-async def connect_google_callback(code: str, state: str) -> dict:
+async def connect_google_callback(code: str, state: str) -> HTMLResponse:
     try:
         await exchange_google_oauth(code, state)
-        return {"connected": True, "message": "Google services connected. You may close this window."}
+        return _app_redirect_page("success", "")
     except (RuntimeError, ValueError, httpx.HTTPError) as error:
-        raise HTTPException(400, str(error))
+        return _app_redirect_page("error", str(error))
 
 
 @app.get("/connect/google/status")

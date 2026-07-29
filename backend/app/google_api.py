@@ -1,19 +1,25 @@
 import os
 import base64
+import time
 from typing import Any
 
 import httpx
 
 from app.token_vault import load_token
+from app.google_oauth import refresh as refresh_google_token
 
 
 async def _token() -> str:
     token = load_token()
     if not token:
         raise RuntimeError("Connect a Google account first with connect_google_account.")
-    if token.get("access_token"):
-        return token["access_token"]
-    raise RuntimeError("Google OAuth token is missing.")
+    if not token.get("access_token"):
+        raise RuntimeError("Google OAuth token is missing.")
+    # expires_at is absent on tokens saved before this field existed - treat as expired so the
+    # very first call after upgrading refreshes rather than trusting a possibly-stale token.
+    if token.get("expires_at", 0) <= time.time():
+        token = await refresh_google_token(token)
+    return token["access_token"]
 
 
 async def google_get(url: str, params: dict[str, Any]) -> dict[str, Any]:

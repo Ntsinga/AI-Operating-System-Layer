@@ -5,10 +5,34 @@ from typing import Any
 from app.google_api import gmail_read, gmail_search
 
 AMOUNT_RE = re.compile(r"(?P<currency>UGX|USD|EUR|GBP|KES|TZS|\$|€|£)\s*([0-9][0-9,]*(?:\.\d{1,2})?)", re.I)
+# "Total"-shaped labels outrank a bare number: a receipt/invoice usually has several dollar
+# amounts (line items, tax, subtotal) and the one adjacent to one of these labels is far more
+# likely to be the actual charge than whichever number happens to appear last in the text.
+TOTAL_LABEL_RE = re.compile(r"(grand total|total due|total charged|amount due|amount charged|total paid|amount paid|balance due|total)", re.I)
+TOTAL_LABEL_WINDOW = 40
 
 
-def _amounts(text: str) -> list[tuple[str, float]]:
-    return [(match.group("currency").upper(), float(match.group(2).replace(",", ""))) for match in AMOUNT_RE.finditer(text)]
+def _amounts(text: str) -> list[tuple[str, float, int]]:
+    return [(match.group("currency").upper(), float(match.group(2).replace(",", "")), match.start()) for match in AMOUNT_RE.finditer(text)]
+
+
+def _best_amount(text: str) -> tuple[str, float] | None:
+    matches = _amounts(text)
+    if not matches:
+        return None
+    label_positions = [m.start() for m in TOTAL_LABEL_RE.finditer(text)]
+    best: tuple[str, float] | None = None
+    best_distance = None
+    for currency, amount, pos in matches:
+        for label_pos in label_positions:
+            distance = pos - label_pos
+            if 0 <= distance <= TOTAL_LABEL_WINDOW and (best_distance is None or distance < best_distance):
+                best, best_distance = (currency, amount), distance
+    if best:
+        return best
+    # No total-like label nearby - the largest amount found is a safer guess than the last one,
+    # since trailing footer/disclaimer text often contains unrelated numbers.
+    return max(((currency, amount) for currency, amount, _ in matches), key=lambda pair: pair[1])
 
 def _category(text: str) -> str:
     value = text.lower()
@@ -30,9 +54,9 @@ async def monthly_finances(year: int, month: int) -> dict[str, Any]:
             if match["id"] in seen: continue
             seen.add(match["id"])
             message = await gmail_read(match["id"])
-            parsed = _amounts(" ".join([match.get("subject", ""), match.get("snippet", ""), message.get("body", "")]))
-            if not parsed: continue
-            currency, amount = parsed[-1]
+            best = _best_amount(" ".join([match.get("subject", ""), match.get("snippet", ""), message.get("body", "")]))
+            if not best: continue
+            currency, amount = best
             items.append({"type": kind, "amount": amount, "currency": currency, "category": _category(match.get("subject", "") + " " + message.get("body", "")), "subject": match.get("subject", ""), "date": match.get("date", ""), "sourceId": match["id"], "confidence": "medium"})
     totals: dict[str, dict[str, float]] = {"expense": {}, "revenue": {}}
     for item in items: totals[item["type"]][item["currency"]] = totals[item["type"]].get(item["currency"], 0) + item["amount"]

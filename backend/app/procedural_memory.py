@@ -10,9 +10,10 @@ from pathlib import Path
 from app.storage import connection, execute, postgres_enabled
 from typing import Any
 try:
-    from cryptography.fernet import Fernet
+    from cryptography.fernet import Fernet, InvalidToken
 except ImportError:  # pragma: no cover - production requirements install cryptography
     Fernet = None  # type: ignore[assignment,misc]
+    InvalidToken = Exception  # type: ignore[assignment,misc]
 
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.procedural_memory")
@@ -87,7 +88,15 @@ def _encode(value: str) -> str:
 
 def _decode(value: str) -> str:
     cipher = _cipher()
-    return cipher.decrypt(value.encode()).decode() if cipher else value
+    if not cipher:
+        return value
+    try:
+        return cipher.decrypt(value.encode()).decode()
+    except InvalidToken:
+        # Rows saved before GOOGLE_TOKEN_ENCRYPTION_KEY was configured are plaintext JSON, not
+        # Fernet ciphertext - treat a decrypt failure as "predates encryption" instead of a hard
+        # error, so turning encryption on later doesn't 500 on every pre-existing procedure.
+        return value
 
 
 def _serialized_steps(steps: list[dict[str, Any]]) -> str:
