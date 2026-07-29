@@ -91,7 +91,10 @@ export function ActivationSetupCard() {
         setProfile('high');
         setMessage(`Low-tone voice sample saved${transcript ? ` (“${transcript}”)` : ''}. Now record your natural higher tone.`);
       } else {
-        setMessage('Both voice samples saved. AI-OS will use them for personalized wake-word matching.');
+        // Honest framing: nothing in VoiceActivationService.kt's detection logic reads these
+        // samples back yet (see ERROR_LOG.md 2026-07-22) - they're stored for a future
+        // personalized wake-word engine, not applied to today's detection.
+        setMessage('Both voice samples saved for a future personalized wake-word engine - detection today still uses the standard "Hey Casper" model.');
       }
       await refresh();
     } catch (error) {

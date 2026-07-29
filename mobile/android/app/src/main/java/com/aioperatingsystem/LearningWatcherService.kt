@@ -99,7 +99,15 @@ class LearningWatcherService : AccessibilityService() {
         .put("surface", surface)
         .put("role", event.className?.toString() ?: "")
         .put("action", actionType)
-      val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null else event.text?.firstOrNull()?.toString()
+      // A tapped list row's AccessibilityEvent.getText() can carry several text pieces (place
+      // name, address, distance, ...) in an order that isn't the visual layout order - for
+      // Uber's destination-result rows this put the volatile distance ("2.4 mi") first. That
+      // value changes on every replay (recalculated from current location), so a selector built
+      // from it can never match again. Prefer the first NON-volatile entry instead of blindly
+      // taking index 0. See ERROR_LOG.md 2026-07-29.
+      val label = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) null
+        else event.text?.map { it?.toString() }?.firstOrNull { !it.isNullOrBlank() && !isVolatileLabel(it) }
+          ?: event.text?.firstOrNull()?.toString()
       if (!label.isNullOrBlank()) action.put("text", label.take(120))
       event.source?.let { node ->
         node.viewIdResourceName?.take(160)?.let { resourceId ->
@@ -113,7 +121,12 @@ class LearningWatcherService : AccessibilityService() {
           }
         }
         val nodeLabel = readableLabel(node)
-        if (!nodeLabel.isNullOrBlank() && !action.has("text")) action.put("text", nodeLabel.take(120))
+        // Same reasoning as above: a node-tree label that isn't volatile outranks an
+        // already-set event-text value that IS volatile (happens when every entry in
+        // event.text was volatile, so the fallback above had nothing better to pick).
+        if (!nodeLabel.isNullOrBlank() && (!action.has("text") || isVolatileLabel(action.optString("text")))) {
+          action.put("text", nodeLabel.take(120))
+        }
         node.contentDescription?.toString()?.take(120)?.let { action.put("contentDescription", it) }
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED && !isSensitiveTextNode(node)) {
           val currentValue = node.text?.toString()?.trim()
@@ -173,7 +186,7 @@ class LearningWatcherService : AccessibilityService() {
     }
   }
   override fun onInterrupt() = Unit
-  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null, requestedSurface: String? = null): Map<String, Any> {
+  fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null, requestedSurface: String? = null, backendBaseUrl: String? = null, procedureId: Int? = null): Map<String, Any> {
     var executed = 0; var skipped = 0
     var lastTextInputValue: String? = null
     var targetSurfaceLost = false
@@ -264,8 +277,19 @@ class LearningWatcherService : AccessibilityService() {
         )
         addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
         if (node == null) {
-          skipped++
-          addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found_after_wait", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
+          if (!backendBaseUrl.isNullOrBlank()) {
+            val outcome = attemptTextInputRecovery(backendBaseUrl, action, procedureId, index)
+            addTrace(outcome.event, outcome.level, outcome.details)
+            if (outcome.executed) {
+              executed++
+              outcome.recoveredTextValue?.let { lastTextInputValue = it }
+            } else {
+              skipped++
+            }
+          } else {
+            skipped++
+            addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found_after_wait", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
+          }
           continue
         }
         if (value == null) {
@@ -360,6 +384,10 @@ class LearningWatcherService : AccessibilityService() {
             skipped++
             addTrace("step_skipped", "warn", mapOf("reason" to "location_suggestion_fallback_click_failed", "query" to queryValue, "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
           }
+        } else if (!backendBaseUrl.isNullOrBlank()) {
+          val outcome = attemptBoundedRecovery(backendBaseUrl, action, selector, lastTextInputValue, procedureId, index)
+          addTrace(outcome.event, outcome.level, outcome.details)
+          if (outcome.executed) executed++ else skipped++
         } else {
           skipped++
           addTrace("step_skipped", "warn", mapOf("reason" to "selector_not_found_after_wait", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
@@ -394,6 +422,320 @@ class LearningWatcherService : AccessibilityService() {
     Log.i("AIOS.Replay", JSONObject(summary).toString())
     return mapOf("executed" to executed, "skipped" to skipped, "verified" to verifiedInt, "trace" to trace)
   }
+
+  private data class RecoveryOutcome(val executed: Boolean, val event: String, val level: String, val details: Map<String, Any?>, val recoveredTextValue: String? = null)
+
+  // "Phase 5.5" bounded replay recovery (docs/AI_OS_ORCHESTRATOR_PLAN.md): only reached for a
+  // tap step whose selector matched nothing after the deterministic waits/fallbacks above all
+  // failed. Text_input has its own separate recovery path (attemptTextInputRecovery) that always
+  // asks a human for the value before typing anything - it never reuses this function. The
+  // backend can only ever hand back one of select_element (by an index into the REAL elements
+  // below - never a coordinate or invented resourceId), retry, ask_user (candidate indices for a
+  // human to pick from - see RecoveryPromptOverlay), or abort; see backend/app/replay_recovery.py
+  // for the safety guard that enforces this server-side too.
+  private fun attemptBoundedRecovery(backendBaseUrl: String, action: Map<String, String>, selector: Map<String, String>, typedValue: String?, procedureId: Int?, stepIndex: Int): RecoveryOutcome {
+    val root = rootInActiveWindow
+    val elements = collectRecoveryElements(root)
+    try {
+      if (elements.isEmpty()) {
+        return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "selector_not_found_after_wait", "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
+      }
+      val requestResult = requestReplayRecovery(backendBaseUrl, selector, elements.map { it.second }, typedValue, action["screenTitle"])
+      val decision = requestResult.decision
+        ?: return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_request_failed", "recoveryRequestFailure" to requestResult.failureReason, "backendBaseUrl" to backendBaseUrl, "visibleTexts" to currentVisibleTexts()))
+
+      return when (decision.optString("action", "abort")) {
+        "select_element" -> {
+          val chosenIndex = decision.optInt("elementIndex", -1)
+          val chosenPair = elements.firstOrNull { it.second.optInt("index") == chosenIndex }
+          val chosen = chosenPair?.first
+          if (chosen == null) {
+            RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_selected_index_not_found_locally", "visibleTexts" to currentVisibleTexts()))
+          } else if (performClick(chosen)) {
+            // Self-healing: save the resolved (stable) selector as a new procedure version so a
+            // future replay of this same procedure hits the ordinary deterministic match path
+            // and never needs recovery again for this step - see AGENTS.md 2026-07-29.
+            val persisted = if (procedureId != null) persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second) else false
+            RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_select_element", "elementIndex" to chosenIndex, "recoveryReason" to decision.optString("reason"), "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()))
+          } else {
+            RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_select_element_click_failed", "visibleTexts" to currentVisibleTexts()))
+          }
+        }
+        "retry" -> {
+          Thread.sleep(1200)
+          val retryNode = waitForNode(
+            replayResourceIdSelector(action), replayTextSelector(action), replayContentDescriptionSelector(action), 3000,
+            resourceIdOccurrence = action["resourceIdOccurrence"]?.toIntOrNull(), action = action,
+          )
+          if (retryNode != null) {
+            val ok = performClick(retryNode)
+            retryNode.recycle()
+            if (ok) RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_retry", "visibleTexts" to currentVisibleTexts()))
+            else RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_retry_click_failed", "visibleTexts" to currentVisibleTexts()))
+          } else {
+            RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_retry_still_not_found", "visibleTexts" to currentVisibleTexts()))
+          }
+        }
+        "ask_user" -> askUserToResolveTap(decision, elements, action, typedValue, backendBaseUrl, procedureId, stepIndex)
+        else -> RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_aborted", "recoveryReason" to decision.optString("reason"), "visibleTexts" to currentVisibleTexts()))
+      }
+    } finally {
+      elements.forEach { it.first.recycle() }
+    }
+  }
+
+  // The backend couldn't safely auto-resolve (ambiguous typed-value matches, or no confident
+  // model match) - rather than aborting the step outright, ask the person replaying, either by
+  // presenting the real candidates as tappable options or by taking free-form text and matching
+  // it against the same real element list. Nothing here is ever a model guess: the element that
+  // ends up tapped is always either explicitly chosen or explicitly confirmed by a human, right
+  // now, in response to this exact ambiguity.
+  private fun askUserToResolveTap(
+    decision: JSONObject,
+    elements: List<Pair<AccessibilityNodeInfo, JSONObject>>,
+    action: Map<String, String>,
+    typedValue: String?,
+    backendBaseUrl: String,
+    procedureId: Int?,
+    stepIndex: Int,
+  ): RecoveryOutcome {
+    val candidateIndicesJson = decision.optJSONArray("candidateIndices")
+    val candidateIndices = (0 until (candidateIndicesJson?.length() ?: 0)).mapNotNull { i -> candidateIndicesJson?.optInt(i, -1)?.takeIf { it >= 0 } }
+    val candidatePairs = elements.filter { candidateIndices.contains(it.second.optInt("index")) }
+    if (candidatePairs.isEmpty()) {
+      return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_no_candidates", "visibleTexts" to currentVisibleTexts()))
+    }
+    val options = candidatePairs.map { (_, meta) -> meta.optString("text").ifBlank { meta.optString("contentDescription").ifBlank { "Option" } } }
+    val screenTitle = action["screenTitle"] ?: action["text"] ?: "this step"
+    val subtitle = if (typedValue.isNullOrBlank()) "Replay couldn't confidently tell which item on \"$screenTitle\" was originally tapped." else "You typed \"$typedValue\" earlier - which result did you originally pick on \"$screenTitle\"?"
+    val answer = RecoveryPromptOverlay.askChoiceOrText(this, "Which one did you mean?", subtitle, options, prefillText = typedValue ?: "")
+    return when (answer) {
+      is RecoveryPromptOverlay.Answer.Selected -> {
+        val chosenPair = candidatePairs[answer.index]
+        if (performClick(chosenPair.first)) {
+          val persisted = if (procedureId != null) persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second) else false
+          RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_ask_user_select", "chosen" to chosenPair.second.optString("text"), "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()))
+        } else {
+          RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_click_failed", "visibleTexts" to currentVisibleTexts()))
+        }
+      }
+      is RecoveryPromptOverlay.Answer.FreeText -> {
+        val typed = answer.text.trim().lowercase()
+        val rematched = elements.filter { (_, meta) ->
+          typed.isNotBlank() &&
+            (meta.optString("text", "").lowercase().contains(typed) || meta.optString("contentDescription", "").lowercase().contains(typed))
+        }
+        if (rematched.size == 1) {
+          val chosenPair = rematched[0]
+          if (performClick(chosenPair.first)) {
+            val persisted = if (procedureId != null) persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second) else false
+            RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_ask_user_free_text", "typedAnswer" to answer.text, "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()))
+          } else {
+            RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_free_text_click_failed", "visibleTexts" to currentVisibleTexts()))
+          }
+        } else {
+          RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_free_text_ambiguous_or_not_found", "matches" to rematched.size, "typedAnswer" to answer.text, "visibleTexts" to currentVisibleTexts()))
+        }
+      }
+      RecoveryPromptOverlay.Answer.Cancelled -> RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_cancelled_or_timed_out", "visibleTexts" to currentVisibleTexts()))
+    }
+  }
+
+  // Reached when a text_input step's selector can no longer be found at all (never for a step
+  // that's merely stale-but-findable - the normal waitForReadyNode path already handles that).
+  // There is no "which element" signal to reason about here the way there is for a tap, so this
+  // always asks a human rather than ever falling back to a model: which editable field (if more
+  // than one is visible) and what value to type into it. The typed value only ever comes from
+  // that synchronous human answer - see RecoveryPromptOverlay's header comment.
+  private fun attemptTextInputRecovery(backendBaseUrl: String?, action: Map<String, String>, procedureId: Int?, stepIndex: Int): RecoveryOutcome {
+    val editableFields = collectEditableFields(rootInActiveWindow)
+    try {
+      if (editableFields.isEmpty()) {
+        return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_text_input_no_editable_field_visible", "visibleTexts" to currentVisibleTexts()))
+      }
+      val screenTitle = action["screenTitle"] ?: "this step"
+      val chosenField = if (editableFields.size == 1) {
+        editableFields.first()
+      } else {
+        val labels = editableFields.mapIndexed { index, (_, meta) -> meta.optString("text").ifBlank { meta.optString("contentDescription").ifBlank { "Field ${index + 1}" } } }
+        val fieldAnswer = RecoveryPromptOverlay.askChoiceOrText(this, "Which field is this?", "Replay couldn't find the original text field on \"$screenTitle\".", labels)
+        when (fieldAnswer) {
+          is RecoveryPromptOverlay.Answer.Selected -> editableFields[fieldAnswer.index]
+          else -> null
+        }
+      } ?: return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_text_input_field_choice_cancelled_or_timed_out", "visibleTexts" to currentVisibleTexts()))
+
+      val fieldLabel = chosenField.second.optString("text").ifBlank { chosenField.second.optString("contentDescription").ifBlank { "this field" } }
+      val prefill = action["value"] ?: action["text"] ?: ""
+      val typedValue = RecoveryPromptOverlay.askText(this, "What should I type into \"$fieldLabel\"?", "The originally taught value no longer matches - confirm or change it.", prefill)
+      if (typedValue.isNullOrBlank()) {
+        return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_text_input_cancelled_or_timed_out", "visibleTexts" to currentVisibleTexts()))
+      }
+      if (!typeIntoNode(chosenField.first, typedValue)) {
+        return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_text_input_set_text_failed", "visibleTexts" to currentVisibleTexts()))
+      }
+      val correctedArguments = JSONObject().apply {
+        put("value", typedValue)
+        chosenField.second.optString("resourceId", "").takeIf { it.isNotBlank() }?.let { put("resourceId", it) }
+        chosenField.second.optString("contentDescription", "").takeIf { it.isNotBlank() }?.let { put("contentDescription", it) }
+      }
+      val persisted = if (procedureId != null && !backendBaseUrl.isNullOrBlank()) persistCorrectedArguments(backendBaseUrl, procedureId, stepIndex, correctedArguments) else false
+      return RecoveryOutcome(
+        true, "step_executed", "info",
+        mapOf("attempted" to "recovery_text_input_ask_user", "answeredValue" to typedValue, "fieldLabel" to fieldLabel, "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()),
+        recoveredTextValue = typedValue,
+      )
+    } finally {
+      editableFields.forEach { it.first.recycle() }
+    }
+  }
+
+  // Mirrors collectRecoveryElements but for currently-visible, enabled editable fields - the
+  // only things attemptTextInputRecovery is ever allowed to type into.
+  private fun collectEditableFields(root: AccessibilityNodeInfo?, maxCount: Int = 12): List<Pair<AccessibilityNodeInfo, JSONObject>> {
+    val results = mutableListOf<Pair<AccessibilityNodeInfo, JSONObject>>()
+    if (root == null) return results
+    fun visit(node: AccessibilityNodeInfo) {
+      if (results.size >= maxCount) return
+      if (node.isEditable && node.isEnabled && node.isVisibleToUser) {
+        val label = readableLabel(node) ?: node.contentDescription?.toString()
+        val obj = JSONObject().apply {
+          put("index", results.size)
+          label?.takeIf { it.isNotBlank() }?.let { put("text", it.take(160)) }
+          node.viewIdResourceName?.let { put("resourceId", it) }
+          node.contentDescription?.toString()?.take(160)?.let { put("contentDescription", it) }
+        }
+        results.add(AccessibilityNodeInfo.obtain(node) to obj)
+      }
+      for (i in 0 until node.childCount) {
+        if (results.size >= maxCount) return
+        node.getChild(i)?.let { child ->
+          visit(child)
+          child.recycle()
+        }
+      }
+    }
+    visit(root)
+    return results
+  }
+
+  // Enumerates real, currently-clickable elements with a stable label - the only things a
+  // recovery decision is ever allowed to reference. Keeps its own AccessibilityNodeInfo copies
+  // (caller must recycle) so a chosen element can still be tapped after the tree walk finishes.
+  private fun collectRecoveryElements(root: AccessibilityNodeInfo?, maxCount: Int = 30): List<Pair<AccessibilityNodeInfo, JSONObject>> {
+    val results = mutableListOf<Pair<AccessibilityNodeInfo, JSONObject>>()
+    if (root == null) return results
+    fun visit(node: AccessibilityNodeInfo) {
+      if (results.size >= maxCount) return
+      if (node.isClickable) {
+        val label = readableLabel(node)
+        if (!label.isNullOrBlank()) {
+          val obj = JSONObject().apply {
+            put("index", results.size)
+            put("text", label.take(160))
+            node.viewIdResourceName?.let { put("resourceId", it) }
+            node.contentDescription?.toString()?.take(160)?.let { put("contentDescription", it) }
+          }
+          results.add(AccessibilityNodeInfo.obtain(node) to obj)
+        }
+      }
+      for (i in 0 until node.childCount) {
+        if (results.size >= maxCount) return
+        node.getChild(i)?.let { child ->
+          visit(child)
+          child.recycle()
+        }
+      }
+    }
+    visit(root)
+    return results
+  }
+
+  // Carries WHY a recovery HTTP call didn't produce a usable decision, not just that it didn't -
+  // a bare null here previously made "recovery_request_failed" traces undiagnosable (e.g. a
+  // 404 because the endpoint isn't deployed looked identical to a network timeout). See
+  // ERROR_LOG.md 2026-07-29 (interactive recovery never fired because /replay/recovery 404'd on
+  // an un-deployed backend).
+  private data class RecoveryRequestResult(val decision: JSONObject?, val failureReason: String?)
+
+  private fun requestReplayRecovery(backendBaseUrl: String, failedSelector: Map<String, String>, elements: List<JSONObject>, typedValue: String?, screenTitle: String?): RecoveryRequestResult {
+    val url = try {
+      java.net.URL(backendBaseUrl.trimEnd('/') + "/replay/recovery")
+    } catch (error: Exception) {
+      Log.e("AIOS.Replay", "replay recovery request failed: malformed backend URL", error)
+      return RecoveryRequestResult(null, "malformed_backend_url:${error.javaClass.simpleName}")
+    }
+    return try {
+      val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        connectTimeout = 4000
+        readTimeout = 8000
+        setRequestProperty("Content-Type", "application/json")
+      }
+      val body = JSONObject().apply {
+        put("failedSelector", JSONObject(failedSelector as Map<*, *>))
+        put("elements", JSONArray(elements))
+        typedValue?.let { put("typedValue", it) }
+        screenTitle?.let { put("screenTitle", it) }
+      }
+      connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+      val status = connection.responseCode
+      val ok = status in 200..299
+      val stream = if (ok) connection.inputStream else connection.errorStream
+      val text = stream?.bufferedReader()?.use { it.readText() }
+      connection.disconnect()
+      if (!ok) {
+        val reason = "http_$status:${text?.take(200) ?: "no_body"}"
+        Log.e("AIOS.Replay", "replay recovery request failed: $reason")
+        RecoveryRequestResult(null, reason)
+      } else if (text.isNullOrBlank()) {
+        Log.e("AIOS.Replay", "replay recovery request failed: empty response body despite HTTP $status")
+        RecoveryRequestResult(null, "empty_response_body")
+      } else {
+        RecoveryRequestResult(JSONObject(text), null)
+      }
+    } catch (error: Exception) {
+      Log.e("AIOS.Replay", "replay recovery request failed", error)
+      RecoveryRequestResult(null, "${error.javaClass.simpleName}:${error.message}")
+    }
+  }
+
+  // Best-effort: a failure here must never affect the live replay's outcome, only whether
+  // future replays still need recovery for this same step.
+  private fun persistRecoveryCorrection(backendBaseUrl: String, procedureId: Int, stepIndex: Int, chosenElement: JSONObject): Boolean {
+    val correctedArguments = JSONObject().apply {
+      chosenElement.optString("text", "").takeIf { it.isNotBlank() }?.let { put("text", it) }
+      chosenElement.optString("resourceId", "").takeIf { it.isNotBlank() }?.let { put("resourceId", it) }
+      chosenElement.optString("contentDescription", "").takeIf { it.isNotBlank() }?.let { put("contentDescription", it) }
+    }
+    return persistCorrectedArguments(backendBaseUrl, procedureId, stepIndex, correctedArguments)
+  }
+
+  private fun persistCorrectedArguments(backendBaseUrl: String, procedureId: Int, stepIndex: Int, correctedArguments: JSONObject): Boolean {
+    return try {
+      val url = java.net.URL(backendBaseUrl.trimEnd('/') + "/procedures/$procedureId/correct-step")
+      val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        connectTimeout = 4000
+        readTimeout = 8000
+        setRequestProperty("Content-Type", "application/json")
+      }
+      val body = JSONObject().apply {
+        put("stepIndex", stepIndex)
+        put("correctedArguments", correctedArguments)
+      }
+      connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+      val ok = connection.responseCode in 200..299
+      connection.disconnect()
+      ok
+    } catch (error: Exception) {
+      Log.e("AIOS.Replay", "persisting replay recovery correction failed", error)
+      false
+    }
+  }
+
   private fun selectorDetails(action: Map<String, String>): Map<String, String> =
     listOf("surface", "resourceId", "resourceIdOccurrence", "text", "contentDescription", "fieldKey", "screenTitle", "selectorKind", "nodeClass", "parentSelectorKind", "parentText").mapNotNull { key ->
       action[key]?.takeIf { it.isNotBlank() }?.let { key to it }
@@ -475,8 +817,6 @@ class LearningWatcherService : AccessibilityService() {
   }
 
   private fun typeTextIncrementally(action: Map<String, String>, value: String): Boolean {
-    val wanted = value.trim()
-    if (wanted.isBlank()) return false
     val occurrence = action["resourceIdOccurrence"]?.toIntOrNull()
     val node = waitForNode(
       replayResourceIdSelector(action),
@@ -488,27 +828,36 @@ class LearningWatcherService : AccessibilityService() {
       action = action,
     ) ?: return false
     return try {
-      node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-      Thread.sleep(FOCUS_SETTLE_BEFORE_TYPING_MS)
-      node.performAction(
-        AccessibilityNodeInfo.ACTION_SET_TEXT,
-        android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "") }
-      )
-      Thread.sleep(220)
-      val typed = StringBuilder()
-      for (char in wanted) {
-        typed.append(char)
-        val ok = node.performAction(
-          AccessibilityNodeInfo.ACTION_SET_TEXT,
-          android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, typed.toString()) }
-        )
-        if (!ok) return false
-        Thread.sleep(260)
-      }
-      true
+      typeIntoNode(node, value)
     } finally {
       node.recycle()
     }
+  }
+
+  // Shared incremental-set-text core: focuses, clears, then types character-by-character so
+  // apps whose autocomplete/suggestions key off each keystroke (not just the final value) still
+  // trigger correctly. Caller owns the node's lifecycle (recycle).
+  private fun typeIntoNode(node: AccessibilityNodeInfo, value: String): Boolean {
+    val wanted = value.trim()
+    if (wanted.isBlank()) return false
+    node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+    Thread.sleep(FOCUS_SETTLE_BEFORE_TYPING_MS)
+    node.performAction(
+      AccessibilityNodeInfo.ACTION_SET_TEXT,
+      android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "") }
+    )
+    Thread.sleep(220)
+    val typed = StringBuilder()
+    for (char in wanted) {
+      typed.append(char)
+      val ok = node.performAction(
+        AccessibilityNodeInfo.ACTION_SET_TEXT,
+        android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, typed.toString()) }
+      )
+      if (!ok) return false
+      Thread.sleep(260)
+    }
+    return true
   }
 
   private fun waitForLocationSuggestionAccepted(query: String, timeoutMs: Long): Boolean {
@@ -1148,6 +1497,18 @@ class LearningWatcherService : AccessibilityService() {
       }
     }
     return null
+  }
+  // Text that describes a moment-in-time fact (distance, ETA, duration, a clock time) rather
+  // than a stable identity - never a good replay selector on its own, since it's expected to be
+  // different on every future run.
+  private val volatileLabelPatterns = listOf(
+    Regex("""^\d+(\.\d+)?\s*(mi|km|m)$""", RegexOption.IGNORE_CASE),
+    Regex("""^\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours)$""", RegexOption.IGNORE_CASE),
+    Regex("""^\d{1,2}:\d{2}\s*(am|pm)?$""", RegexOption.IGNORE_CASE),
+  )
+  private fun isVolatileLabel(text: String?): Boolean {
+    val trimmed = text?.trim() ?: return false
+    return volatileLabelPatterns.any { it.matches(trimmed) }
   }
   private fun readableLabel(node: AccessibilityNodeInfo): String? {
     node.text?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { return it }

@@ -36,7 +36,8 @@ class AppToolsPackage : ReactPackage {
     CalendarModule(reactContext),
     BriefStoreModule(reactContext),
     SmsInboxModule(reactContext),
-    LearningWatcherModule(reactContext)
+    LearningWatcherModule(reactContext),
+    ExpenseStoreModule(reactContext)
   )
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()

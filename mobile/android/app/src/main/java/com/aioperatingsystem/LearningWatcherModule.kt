@@ -79,7 +79,7 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
     android.util.Log.i("AIOS.Learning", JSONObject(mapOf("event" to "queue_cleared")).toString())
     promise.resolve(null)
   }
-  @ReactMethod fun replayActions(actions: ReadableArray, values: ReadableMap, completion: ReadableMap?, targetSurface: String?, promise: Promise) {
+  @ReactMethod fun replayActions(actions: ReadableArray, values: ReadableMap, completion: ReadableMap?, targetSurface: String?, backendBaseUrl: String?, procedureId: Double?, promise: Promise) {
     val service = LearningWatcherService.instance
     if (service == null) { promise.reject("LEARNING_WATCHER_DISABLED", "Enable AI-OS in Android Accessibility settings first."); return }
     val mapped = mutableListOf<Map<String, String>>()
@@ -144,7 +144,7 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         context.startActivity(launchIntent)
       }
-      promise.resolve(Arguments.makeNativeMap(service.replay(mapped, runtimeValues, completionSelector, packageToOpen)))
+      promise.resolve(Arguments.makeNativeMap(service.replay(mapped, runtimeValues, completionSelector, packageToOpen, backendBaseUrl, procedureId?.toInt())))
     } finally {
       if (overlayWasRunning) {
         OverlayService.start(context)

@@ -1,17 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { analyzeSmsFinances, extractReceipt, getMonthlyFinances, type MonthlyFinance } from '../planner/expenseClient';
+import { analyzeSmsFinances, extractReceipt, getMonthlyFinances, getRecurringCharges, type MonthlyFinance, type RecurringCharge } from '../planner/expenseClient';
 import { getSmsInboxModule } from '../native/SmsInbox';
 import { getMediaCaptureModule } from '../native/MediaCapture';
+import { getExpenseStore } from '../native/ExpenseStore';
 import { connectGoogleAccountTool } from '../tools/registry';
 import { BACKEND_BASE_URL } from '../config/backend';
 import { colors } from '../theme';
 import { GradientButton } from './GradientButton';
 
 const SMS_LOOKBACK_HOURS = 744; // native cap (31 days); backend filters to the requested day/month
+const SUBSCRIPTION_LOOKBACK_HOURS = 4320; // ~180 days - enough history to see a monthly charge repeat
 type Mode = 'month' | 'day';
 type Source = 'gmail' | 'sms' | 'both';
-type BusySource = Source | 'receipt' | null;
+type BusySource = Source | 'receipt' | 'subscriptions' | null;
 type ExpenseItem = MonthlyFinance['items'][number];
 
 function emptyFinance(year: number, month: number): MonthlyFinance {
@@ -38,6 +40,14 @@ export function ExpenseDashboardCard() {
   const [manualCategory, setManualCategory] = useState('');
   const [manualSubject, setManualSubject] = useState('');
   const [manualType, setManualType] = useState<'expense' | 'revenue'>('expense');
+  // Manually-typed and scanned entries persist on-device (ExpenseStoreModule.kt) so they survive
+  // app restarts and this card unmounting - and so the add_expense_entry planner tool (voice:
+  // "Hey Casper, I spent 5000 on lunch") writes to the exact same store this card reads from,
+  // without needing this card to be open. Kept separate from `data` (the Gmail/SMS load result)
+  // and merged at render time, since a fresh Gmail/SMS load replaces `data` wholesale but must
+  // never wipe out persisted entries.
+  const [persistedItems, setPersistedItems] = useState<ExpenseItem[]>([]);
+  const [recurringCharges, setRecurringCharges] = useState<RecurringCharge[] | null>(null);
 
   const year = anchor.getFullYear();
   const month = anchor.getMonth() + 1;
@@ -45,6 +55,30 @@ export function ExpenseDashboardCard() {
   const anchorLabel = mode === 'day'
     ? anchor.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
     : anchor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+  useEffect(() => { void refreshPersistedItems(); }, []);
+
+  async function refreshPersistedItems() {
+    try {
+      const blob = await getExpenseStore().getExpenseEntries();
+      setPersistedItems(JSON.parse(blob || '[]'));
+    } catch {
+      // Best-effort - a fresh install (no native module built yet) just means no persisted items.
+    }
+  }
+
+  async function persistItem(item: ExpenseItem) {
+    await getExpenseStore().addExpenseEntry(JSON.stringify(item));
+    await refreshPersistedItems();
+  }
+
+  function isInSelectedPeriod(dateIso: string): boolean {
+    const when = new Date(dateIso);
+    if (Number.isNaN(when.getTime())) return true; // keep unparseable dates rather than hiding them
+    if (when.getFullYear() !== year || when.getMonth() + 1 !== month) return false;
+    if (day && when.getDate() !== day) return false;
+    return true;
+  }
 
   function stepAnchor(delta: number) {
     const next = new Date(anchor);
@@ -58,11 +92,6 @@ export function ExpenseDashboardCard() {
     const response = await fetch(`${BACKEND_BASE_URL}/expenses/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finances: result }) });
     const json = await response.json();
     if (response.ok) setAnalysis(json.analysis ?? '');
-  }
-
-  function addItem(item: ExpenseItem) {
-    const base = data ?? emptyFinance(year, month);
-    setData(withRecomputedTotals({ ...base, items: [...base.items, item] }));
   }
 
   // Single entry point instead of separate Gmail/SMS buttons - asks which source(s) once, then
@@ -102,6 +131,19 @@ export function ExpenseDashboardCard() {
     finally { setBusySource(null); }
   }
 
+  // Pulls a much wider SMS window (180 days vs the normal 31) since confirming a charge repeats
+  // monthly needs at least two occurrences - a single month's data can never show that. Read-only
+  // detection, no OpenAI call, doesn't touch or replace whatever's currently loaded/displayed.
+  async function findRecurringCharges() {
+    setBusySource('subscriptions'); setError(null);
+    try {
+      const messages = await getSmsInboxModule().getRecentSms(SUBSCRIPTION_LOOKBACK_HOURS);
+      const result = await analyzeSmsFinances(year, month, messages, undefined, true);
+      setRecurringCharges(await getRecurringCharges(result.items));
+    } catch (e) { setError(e instanceof Error ? e.message : 'Recurring-charge detection failed.'); }
+    finally { setBusySource(null); }
+  }
+
   // Scans a receipt and appends it as a candidate expense to whatever is already loaded, rather
   // than re-running /expenses/analyze (that costs an OpenAI call per load - not worth spending
   // again just to add one item the user hasn't even reviewed yet). The panel stays open
@@ -113,7 +155,7 @@ export function ExpenseDashboardCard() {
       const receipt = await extractReceipt(photo.uri);
       const total = Number(receipt.total);
       if (!total || Number.isNaN(total)) throw new Error('Could not read a total from that receipt.');
-      addItem({
+      await persistItem({
         type: 'expense',
         amount: total,
         currency: String(receipt.currency ?? '').toUpperCase() || 'UGX',
@@ -127,11 +169,11 @@ export function ExpenseDashboardCard() {
     finally { setBusySource(null); }
   }
 
-  function addManualExpense() {
+  async function addManualExpense() {
     const amount = Number(manualAmount);
     if (!amount || Number.isNaN(amount)) { setError('Enter a valid amount.'); return; }
     setError(null);
-    addItem({
+    await persistItem({
       type: manualType,
       amount,
       currency: manualCurrency.trim().toUpperCase() || 'UGX',
@@ -153,8 +195,9 @@ export function ExpenseDashboardCard() {
 
   const needsGoogleConnect = /connect a google account/i.test(error ?? '');
   const busy = busySource !== null;
+  const displayedItems = [...(data?.items ?? []), ...persistedItems.filter((item) => isInSelectedPeriod(item.date))];
   const categories: Record<string, number> = {};
-  data?.items.filter((item) => item.type === 'expense').forEach((item) => { categories[item.category] = (categories[item.category] ?? 0) + item.amount; });
+  displayedItems.filter((item) => item.type === 'expense').forEach((item) => { categories[item.category] = (categories[item.category] ?? 0) + item.amount; });
   const max = Math.max(1, ...Object.values(categories));
 
   return (
@@ -201,16 +244,34 @@ export function ExpenseDashboardCard() {
           </View>
           <TextInput style={styles.input} value={manualCategory} onChangeText={setManualCategory} placeholder="Category (e.g. Food)" placeholderTextColor={colors.textMuted} />
           <TextInput style={styles.input} value={manualSubject} onChangeText={setManualSubject} placeholder="Merchant / description" placeholderTextColor={colors.textMuted} />
-          <GradientButton label="Add" disabled={!manualAmount.trim()} onPress={addManualExpense} />
+          <GradientButton label="Add" disabled={!manualAmount.trim()} onPress={() => void addManualExpense()} />
         </View>
+      ) : null}
+
+      <GradientButton label={busySource === 'subscriptions' ? 'Scanning 180 days of SMS...' : 'Find recurring charges'} disabled={busy} onPress={() => void findRecurringCharges()} style={styles.connectButton} />
+      {recurringCharges ? (
+        recurringCharges.length === 0 ? (
+          <Text style={styles.summary}>No recurring charges found in the last 180 days.</Text>
+        ) : (
+          <View style={styles.addPanel}>
+            <Text style={styles.addPanelHint}>Charges that repeat roughly monthly:</Text>
+            {recurringCharges.map((charge) => (
+              <View key={`${charge.subject}-${charge.amount}-${charge.currency}`} style={styles.barRow}>
+                <Text style={styles.category} numberOfLines={1}>{charge.subject}</Text>
+                <Text style={styles.summary}>{charge.occurrences}x</Text>
+                <Text style={styles.amount}>{charge.currency} {charge.amount.toLocaleString()}</Text>
+              </View>
+            ))}
+          </View>
+        )
       ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {needsGoogleConnect ? <GradientButton label={connecting ? 'Opening Google sign-in...' : 'Connect Google Account'} disabled={connecting} onPress={() => void connectGoogle()} style={styles.connectButton} /> : null}
 
-      {data ? (
+      {displayedItems.length > 0 ? (
         <>
-          <Text style={styles.summary}>Expenses and revenue are grouped by currency. {data.items.length} candidate item(s).</Text>
+          <Text style={styles.summary}>Expenses and revenue are grouped by currency. {displayedItems.length} candidate item(s).</Text>
           {Object.entries(categories).map(([category, value]) => (
             <View key={category} style={styles.barRow}>
               <Text style={styles.category}>{category}</Text>

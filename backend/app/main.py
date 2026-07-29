@@ -20,7 +20,9 @@ from app.google_api import calendar_upcoming, drive_search, gmail_search, gmail_
 from app.expenses import monthly_finances  # noqa: E402
 from app.receipt import extract_receipt  # noqa: E402
 from app.sms_finances import sms_finances  # noqa: E402
-from app.procedural_memory import approve_procedure, delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
+from app.subscriptions import detect_recurring_charges  # noqa: E402
+from app.replay_recovery import resolve_replay_recovery  # noqa: E402
+from app.procedural_memory import approve_procedure, correct_step_and_save_version, delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
 from app.learning import append_action, append_actions, complete_session, start_session  # noqa: E402
 from app.debug_events import list_events, record_events  # noqa: E402
 
@@ -227,7 +229,18 @@ class SmsFinanceRequest(BaseModel):
     year: int
     month: int
     day: int | None = None
+    allTime: bool = False
     messages: list[dict[str, Any]]
+
+class RecurringChargesRequest(BaseModel):
+    items: list[dict[str, Any]]
+
+class ReplayRecoveryRequest(BaseModel):
+    failedSelector: dict[str, Any]
+    elements: list[dict[str, Any]]
+    typedValue: str | None = None
+    screenTitle: str | None = None
+    intent: str | None = None
 
 
 @app.post("/expenses/month")
@@ -260,7 +273,33 @@ async def expenses_receipt(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @app.post("/expenses/sms")
 def expenses_sms(req: SmsFinanceRequest) -> dict[str, Any]:
-    return sms_finances(req.messages, req.year, req.month, req.day)
+    return sms_finances(req.messages, req.year, req.month, req.day, req.allTime)
+
+
+@app.post("/expenses/subscriptions")
+def expenses_subscriptions(req: RecurringChargesRequest) -> list[dict[str, Any]]:
+    return detect_recurring_charges(req.items)
+
+
+@app.post("/replay/recovery")
+def replay_recovery(req: ReplayRecoveryRequest) -> dict[str, Any]:
+    try:
+        return resolve_replay_recovery(req.failedSelector, req.elements, req.typedValue, req.screenTitle, req.intent)
+    except Exception as error:  # noqa: BLE001 - replay must always get a bounded action back, never a 500 mid-replay
+        return {"action": "abort", "elementIndex": None, "reason": f"recovery request failed: {error}"}
+
+
+class CorrectStepRequest(BaseModel):
+    stepIndex: int
+    correctedArguments: dict[str, Any]
+
+
+@app.post("/procedures/{procedure_id}/correct-step")
+def procedures_correct_step(procedure_id: int, req: CorrectStepRequest) -> dict[str, Any]:
+    result = correct_step_and_save_version(procedure_id, req.stepIndex, req.correctedArguments)
+    if result is None:
+        raise HTTPException(404, "Procedure or step index not found.")
+    return result
 
 
 class StartWorkflowRequest(BaseModel):

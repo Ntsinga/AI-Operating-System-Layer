@@ -214,6 +214,51 @@ def save_procedure(intent: str, history: list[dict[str, Any]], success: bool = T
         )
 
 
+def get_procedure(procedure_id: int) -> dict[str, Any] | None:
+    with _connection() as connection:
+        row = execute(
+            connection,
+            "SELECT id, intent, steps_json, success, outcome, scope, version, state, created_at FROM procedures WHERE id = ?",
+            (procedure_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "intent": row[1], "steps": json.loads(_decode(row[2])), "success": bool(row[3]), "outcome": row[4], "scope": row[5], "version": row[6], "state": row[7], "createdAt": row[8]}
+
+
+def correct_step_and_save_version(procedure_id: int, step_index: int, corrected_fields: dict[str, Any]) -> dict[str, Any] | None:
+    """Persists a bounded replay-recovery correction (backend/app/replay_recovery.py) as a new
+    procedure version, leaving the original version's row untouched - same versioning model
+    save_procedure already uses for any other re-teach, so there's a real audit trail instead of
+    silently rewriting what was taught.
+    """
+    procedure = get_procedure(procedure_id)
+    if not procedure or step_index < 0 or step_index >= len(procedure["steps"]):
+        return None
+    corrected_steps = [dict(step) for step in procedure["steps"]]
+    corrected_arguments = dict(corrected_steps[step_index].get("arguments", {}))
+    corrected_arguments.update(corrected_fields)
+    corrected_steps[step_index] = {**corrected_steps[step_index], "arguments": corrected_arguments}
+    save_procedure(
+        procedure["intent"],
+        corrected_steps,
+        success=True,
+        scope=procedure["scope"],
+        outcome="recovered",
+        state=procedure["state"],
+    )
+    with _connection() as connection:
+        row = execute(
+            connection,
+            "SELECT id, intent, steps_json, success, outcome, scope, version, state, created_at FROM procedures "
+            "WHERE scope = ? AND LOWER(intent) = LOWER(?) ORDER BY version DESC LIMIT 1",
+            (procedure["scope"][:200], procedure["intent"][:500]),
+        ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "intent": row[1], "steps": json.loads(_decode(row[2])), "success": bool(row[3]), "outcome": row[4], "scope": row[5], "version": row[6], "state": row[7], "createdAt": row[8]}
+
+
 def search_procedures(intent: str, limit: int = 3) -> list[dict[str, Any]]:
     terms = [term for term in intent.lower().split() if len(term) > 2][:6]
     if not terms:

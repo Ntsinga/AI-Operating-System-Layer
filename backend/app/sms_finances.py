@@ -60,17 +60,21 @@ def _in_range(epoch_ms: Any, start: date, end: date) -> bool:
     return start <= when < end
 
 
-def sms_finances(messages: list[dict[str, Any]], year: int, month: int, day: int | None = None) -> dict[str, Any]:
-    if day:
-        start = date(year, month, day)
-        end = start + timedelta(days=1)
-    else:
-        start = date(year, month, 1)
-        end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+def sms_finances(messages: list[dict[str, Any]], year: int, month: int, day: int | None = None, all_time: bool = False) -> dict[str, Any]:
+    if not all_time:
+        if day:
+            start = date(year, month, day)
+            end = start + timedelta(days=1)
+        else:
+            start = date(year, month, 1)
+            end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
 
     items = []
     for message in messages:
-        if not _in_range(message.get("dateEpochMs"), start, end):
+        # all_time skips the date-window filter entirely - used by recurring-charge detection,
+        # which needs every transaction across the whole pulled window (e.g. 180 days), not one
+        # month, to see a charge repeat.
+        if not all_time and not _in_range(message.get("dateEpochMs"), start, end):
             continue
         body = message.get("body", "")
         if not _is_real_transaction(body): continue

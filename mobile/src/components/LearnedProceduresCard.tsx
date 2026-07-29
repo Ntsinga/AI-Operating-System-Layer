@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, DeviceEventEmitter, Pressable, StyleSheet, Text, View } from 'react-native';
 import { approveLearnedProcedure, deleteLearnedProcedure, listLearnedProcedures, recordDebugEvents } from '../planner/learningClient';
 import { replayLearningActions } from '../native/LearningWatcher';
+import { BACKEND_BASE_URL } from '../config/backend';
 import { colors } from '../theme';
 
 type Procedure = { id: number; intent: string; steps: Array<{ arguments?: Record<string, unknown> }>; outcome: string; scope: string; version: number; state: string; createdAt: string };
@@ -140,7 +141,7 @@ export function LearnedProceduresCard() {
         },
       }]).catch(() => undefined);
       const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
-      const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values, undefined, targetSurface);
+      const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), values, undefined, targetSurface, BACKEND_BASE_URL, procedure.id);
       await recordDebugEvents((result.trace ?? []).map((event) => ({
         traceId,
         flow: 'replay',

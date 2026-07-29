@@ -1,5 +1,6 @@
 package com.aioperatingsystem
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 
@@ -17,6 +18,20 @@ class MainActivity : ReactActivity() {
     // This is required for expo-splash-screen.
     setTheme(R.style.AppTheme);
     super.onCreate(null)
+  }
+
+  // MainActivity is launchMode="singleTask" (AndroidManifest.xml), so once the app's task
+  // already exists - the normal case, since "Hey Casper" is enabled from inside the running app
+  // - Android delivers a new deep link (aios://voice?command=..., fired by
+  // VoiceActivationService.kt after a wake-word command) through onNewIntent(), not a fresh
+  // onCreate(). Without forwarding it via setIntent(), RN's Linking module never sees the URL:
+  // App.tsx's Linking.addEventListener('url', ...) silently never fires and the transcribed
+  // voice command is dropped, even though the app visibly comes to the foreground. Only a full
+  // cold start (app previously killed) worked before this fix, since then the intent arrives as
+  // the activity's initial intent instead (Linking.getInitialURL()).
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
   }
 
   /**

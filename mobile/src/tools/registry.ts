@@ -31,6 +31,7 @@ import { getAppHealthModule, type AppHealthResult, type AppSettingsResult } from
 import { getCalendarModule, type CalendarEvent } from '../native/Calendar';
 import { searchGmail, readGmail, searchDrive, readDrive, getGoogleCalendarUpcoming, createGmailDraft, createGoogleCalendarEvent, type GmailSearchResult, type DriveSearchResult } from '../planner/googleWorkspaceClient';
 import { getMonthlyFinances, analyzeSmsFinances, analyzeFinances, extractReceipt, type MonthlyFinance } from '../planner/expenseClient';
+import { getExpenseStore } from '../native/ExpenseStore';
 import { getSmsInboxModule, type SmsMessage } from '../native/SmsInbox';
 import type { ToolDefinition } from './types';
 import { listLearnedProcedures, recordDebugEvents } from '../planner/learningClient';
@@ -406,6 +407,37 @@ export const extractReceiptTool = {
   parameters: { type: 'object', properties: { imageUri: { type: 'string', description: 'Local receipt image URI from take_photo or a user-selected file.' } }, required: ['imageUri'] },
   execute: (input: { imageUri: string }) => extractReceipt(input.imageUri),
 } satisfies ToolDefinition<{ imageUri: string }, Record<string, unknown>>;
+
+export type AddExpenseEntryInput = { type: 'expense' | 'revenue'; amount: number; currency: string; category: string; subject: string };
+export const addExpenseEntryTool = {
+  name: 'add_expense_entry',
+  description: 'Records a manually described expense or revenue candidate (e.g. "I spent 5000 on lunch") into the finance overview for later review, without needing a receipt, email, or SMS. Persists locally on the device.',
+  parameters: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', description: 'Either "expense" or "revenue".' },
+      amount: { type: 'number', description: 'The amount, as a plain positive number.' },
+      currency: { type: 'string', description: 'Currency code, e.g. UGX, USD. Infer from context if not stated.' },
+      category: { type: 'string', description: 'A short category, e.g. Food, Transport, Mobile Money.' },
+      subject: { type: 'string', description: 'A short description, e.g. "Lunch" or the merchant/person involved.' },
+    },
+    required: ['type', 'amount', 'currency', 'category', 'subject'],
+  },
+  execute: async (input: AddExpenseEntryInput) => {
+    const entry = {
+      type: input.type,
+      amount: input.amount,
+      currency: input.currency.toUpperCase(),
+      category: input.category || 'Other',
+      subject: input.subject || 'Manual entry',
+      date: new Date().toISOString(),
+      sourceId: `voice-${Date.now()}`,
+      confidence: 'high',
+    };
+    await getExpenseStore().addExpenseEntry(JSON.stringify(entry));
+    return entry;
+  },
+} satisfies ToolDefinition<AddExpenseEntryInput, MonthlyFinance['items'][number]>;
 export const getRecentSmsTool = {
   name: 'get_recent_sms', description: 'Reads recent SMS messages after explicit READ_SMS permission. Use for bank/mobile-money alerts and receipts; sensitive message content stays in the workflow context.',
   parameters: { type: 'object', properties: { hours: { type: 'number', description: 'Lookback window from 1 to 744 hours.' } }, required: ['hours'] },
@@ -536,6 +568,24 @@ export const sendSmsTool = {
   execute: (input: SendSmsInput) => getSmsModule().sendSms(input.phoneNumber, input.message),
   confirmBeforeExecute: true,
 } satisfies ToolDefinition<SendSmsInput, SendSmsResult>;
+
+export type ShareLocationInput = { phoneNumber: string };
+export const shareLocationViaSmsTool = {
+  name: 'share_location_via_sms',
+  description: 'Gets the device current location and sends it as a Google Maps link via SMS to the given phone number - a one-shot share, not a repeating live share. To share with a contact by name, call get_contacts first to find their number. Requires explicit confirmation before sending.',
+  parameters: {
+    type: 'object',
+    properties: { phoneNumber: { type: 'string', description: 'The destination phone number.' } },
+    required: ['phoneNumber'],
+  },
+  execute: async (input: ShareLocationInput) => {
+    const location = await getLocationManager().getCurrentLocation();
+    const mapsUrl = `https://www.google.com/maps?q=${location.latitude},${location.longitude}`;
+    const message = `Sharing my current location: ${mapsUrl}`;
+    return getSmsModule().sendSms(input.phoneNumber, message);
+  },
+  confirmBeforeExecute: true,
+} satisfies ToolDefinition<ShareLocationInput, SendSmsResult>;
 
 export const makeCallTool = {
   name: 'make_call',
@@ -754,7 +804,7 @@ export const replayLearnedProcedureTool = {
       },
     }]).catch(() => undefined);
     const targetSurface = procedure.scope && procedure.scope !== 'local' && procedure.scope.includes('.') ? procedure.scope : undefined;
-    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector, targetSurface);
+    const result = await replayLearningActions(procedure.steps.map((step) => step.arguments ?? {}), input.runtimeValues ?? {}, input.completionSelector, targetSurface, BACKEND_BASE_URL, procedure.id);
     await recordDebugEvents((result.trace ?? []).map((event) => ({
       traceId,
       flow: 'replay',
@@ -815,6 +865,7 @@ export const tools: ToolDefinition<any, any>[] = [
   createGoogleCalendarEventTool,
   getMonthlyFinancesTool,
   extractReceiptTool,
+  addExpenseEntryTool,
   getRecentSmsTool,
   analyzeSmsFinancesTool,
   analyzeFinancesTool,
@@ -826,6 +877,7 @@ export const tools: ToolDefinition<any, any>[] = [
   navigateMapsTool,
   openPlayStoreListingTool,
   sendSmsTool,
+  shareLocationViaSmsTool,
   makeCallTool,
   setScreenBrightnessTool,
   takePhotoTool,
