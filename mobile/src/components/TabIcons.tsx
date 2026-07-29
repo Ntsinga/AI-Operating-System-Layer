@@ -39,8 +39,8 @@ export function ChatIcon({ color, size = 18 }: IconProps) {
   );
 }
 
-// Tools: a 2x2 grid of rounded squares (mirrors the "Apps" grid icon in the brand image).
-export function ToolsIcon({ color, size = 18 }: IconProps) {
+// Settings: a 2x2 grid of rounded squares (mirrors the "Apps" grid icon in the brand image).
+export function SettingsIcon({ color, size = 18 }: IconProps) {
   const cell = size * 0.42;
   const radius = cell * 0.32;
   return (

@@ -98,7 +98,11 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["screen"], screen)
         self.assertNotIn("screenshot", result["actions"][0])
 
-    def test_learning_session_uses_append_only_action_rows(self):
+    def test_learning_session_compacts_noise_before_meaningful_actions(self):
+        # A long teaching session (232 raw appends) exceeds MAX_ACTIONS (80, see learning.py).
+        # Compaction must drop the low-value screen_transition noise first - never the initial
+        # tap that triggered the flow or the final text_input - even though the tap is by far
+        # the oldest action and would be the first thing a naive "keep last N" cutoff discards.
         session = learning.start_session("teach long ride flow", "com.example.ride")
         learning.append_actions(session["sessionId"], [{"action": "tap", "text": "Order a SafeBoda", "resourceId": "content"}])
         for index in range(230):
@@ -119,7 +123,7 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
 
         result = learning.complete_session(session["sessionId"])
 
-        self.assertEqual(len(result["actions"]), 232)
+        self.assertLessEqual(len(result["actions"]), learning.MAX_ACTIONS)
         self.assertEqual(result["actions"][0]["action"], "tap")
         self.assertEqual(result["actions"][0]["text"], "Order a SafeBoda")
         self.assertEqual(result["actions"][-1]["action"], "text_input")

@@ -29,19 +29,28 @@ def _record_learning_event(**kwargs: Any) -> None:
         logger.warning("learning_debug_event_failed event=%s", kwargs.get("event"), exc_info=True)
 
 
+NOISE_ACTION_TYPES = {"observe", "scroll", "screen_transition"}
+
+
 def _compact_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep session JSON valid without blindly truncating it.
 
-    Prefer preserving actionable steps. If a session gets too large, drop older
-    observe/scroll noise first, then oldest actions only as a last resort.
+    Prefer preserving actionable steps (tap, text_input, ...). If a session gets too large,
+    drop older observe/scroll/screen_transition noise first, then oldest actions only as a
+    last resort - matches the low-value tail of procedural_memory.py's STEP_ACTION_PRIORITY.
+
+    A previous version applied a hard `actions[-MAX_ACTIONS:]` positional cutoff before this
+    loop ever ran, which silently discarded the oldest actions regardless of type - including,
+    in a long teaching session, the very first tap that triggered the whole flow - while this
+    noise-preferring logic never actually ran (80 items are always under the char budget).
     """
-    compacted = list(actions[-MAX_ACTIONS:])
-    while len(json.dumps(compacted, default=str)) > MAX_ACTIONS_JSON_CHARS and len(compacted) > 1:
+    compacted = list(actions)
+    while (len(compacted) > MAX_ACTIONS or len(json.dumps(compacted, default=str)) > MAX_ACTIONS_JSON_CHARS) and len(compacted) > 1:
         removable_index = next(
             (
                 index
                 for index, action in enumerate(compacted)
-                if action.get("action") in {"observe", "scroll"}
+                if action.get("action") in NOISE_ACTION_TYPES
             ),
             0,
         )

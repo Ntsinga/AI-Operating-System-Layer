@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { getAppManager, type InstalledApp } from '../native/AppManager';
@@ -23,6 +23,12 @@ export function GoalGuardCard() {
   const [error, setError] = useState<string | null>(null);
 
   const packageList = () => [...selectedPackages];
+
+  // Device Owner is required for real enforcement, but the old flow only surfaced that after a
+  // user filled in a goal, a duration, picked apps, and tapped Start - checking silently on
+  // mount means the "this won't actually block anything yet" notice shows before they invest
+  // time in the form, not after.
+  useEffect(() => { void refreshStatus(); }, []);
 
   async function loadApps() {
     setError(null); setBusy(true);
@@ -85,6 +91,9 @@ export function GoalGuardCard() {
   return <View style={styles.card}>
     <Text style={styles.name}>Goal Guard</Text>
     <Text style={styles.description}>Block selected apps while you complete a goal. Enforcement requires AI-OS Device Owner mode.</Text>
+    {status && !status.deviceOwner ? (
+      <Text style={styles.notice}>Device Owner is not active - starting a goal below will fail. Provision AI-OS as Device Owner first (see docs/AI_OS_TEST_GUIDE.md), then tap "Check Device Owner status" to confirm.</Text>
+    ) : null}
     <TextInput style={styles.input} value={goal} onChangeText={setGoal} placeholder="Goal" placeholderTextColor={colors.textMuted} editable={!active && !busy} />
     <TextInput style={styles.input} value={duration} onChangeText={setDuration} placeholder="Block duration in minutes" placeholderTextColor={colors.textMuted} keyboardType="numeric" editable={!active && !busy} />
     <GradientButton label={busy ? 'Loading apps...' : 'Choose apps to block'} disabled={busy || active} onPress={() => void loadApps()} />
@@ -111,6 +120,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 14, borderWidth: 1, marginBottom: 16, padding: 16 },
   name: { color: colors.textPrimary, fontSize: 16, fontWeight: '800' },
   description: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginBottom: 12, marginTop: 6 },
+  notice: { backgroundColor: colors.infoBg, borderColor: colors.infoBorder, borderRadius: 10, borderWidth: 1, color: colors.textSecondary, fontSize: 12, lineHeight: 17, marginBottom: 12, padding: 10 },
   input: { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: 10, borderWidth: 1, color: colors.textPrimary, fontSize: 14, marginBottom: 10, minHeight: 46, paddingHorizontal: 12 },
   selectionHint: { color: colors.textSecondary, fontSize: 12, marginTop: 10 },
   appList: { gap: 8, marginTop: 8, maxHeight: 260 },

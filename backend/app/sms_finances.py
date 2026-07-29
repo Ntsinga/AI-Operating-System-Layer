@@ -3,6 +3,14 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 AMOUNT_RE = re.compile(r"(?P<currency>UGX|USD|KES|TZS|EUR|GBP|\$|€|£)\s*([0-9][0-9,]*(?:\.\d{1,2})?)", re.I)
+BALANCE_LABEL_RE = re.compile(r"balance", re.I)
+BALANCE_LABEL_WINDOW = 25  # chars of text immediately before the amount to check for "balance"
+TRANSACTION_ID_RE = re.compile(r"transaction\s*id", re.I)
+# Real mobile-money/bank confirmations describe something that already happened ("sent",
+# "deducted", ...) or carry a transaction id. Loan/bundle ADS mention amounts too ("Borrow up to
+# UGX 16,000", "Loan up to UGX 2,000,000. Download now.") without either - real user SMS sample
+# showed these getting counted as huge expense candidates alongside genuine transactions.
+TRANSACTION_VERBS = ("sent", "received", "credited", "deducted", "charged", "paid", "loaded", "repaid", "used", "debited", "withdrawn", "completed", "confirmed")
 # Ordered most-specific-first: mobile money/bank/airtime senders (e.g. "MTNMobMoney", "MTNDATA",
 # "EquityBank") dominate real SMS traffic and were previously falling through to "Other" because
 # only a handful of generic English words were checked.
@@ -26,6 +34,25 @@ def _category(text: str) -> str:
     return "Other"
 
 
+def _is_real_transaction(body: str) -> bool:
+    if TRANSACTION_ID_RE.search(body):
+        return True
+    lower = body.lower()
+    return any(verb in lower for verb in TRANSACTION_VERBS)
+
+
+def _best_amount(body: str) -> tuple[str, float] | None:
+    # These messages consistently list [actual amount] ... [fee] ... [running balance], in that
+    # order - the last number in the text is almost always the balance, not the transaction. The
+    # first amount not immediately preceded by a "balance" label is reliably the real one.
+    for match in AMOUNT_RE.finditer(body):
+        window_start = max(0, match.start() - BALANCE_LABEL_WINDOW)
+        if BALANCE_LABEL_RE.search(body[window_start:match.start()]):
+            continue
+        return match.group("currency").upper(), float(match.group(2).replace(",", ""))
+    return None
+
+
 def _in_range(epoch_ms: Any, start: date, end: date) -> bool:
     if not isinstance(epoch_ms, (int, float)):
         return True  # keep undated messages rather than silently dropping candidates
@@ -45,10 +72,12 @@ def sms_finances(messages: list[dict[str, Any]], year: int, month: int, day: int
     for message in messages:
         if not _in_range(message.get("dateEpochMs"), start, end):
             continue
-        body = message.get("body", ""); matches = list(AMOUNT_RE.finditer(body))
-        if not matches: continue
+        body = message.get("body", "")
+        if not _is_real_transaction(body): continue
+        best = _best_amount(body)
+        if not best: continue
         address = message.get("address", "SMS")
-        lower = body.lower(); currency = matches[-1].group("currency").upper(); amount = float(matches[-1].group(2).replace(",", ""))
+        lower = body.lower(); currency, amount = best
         kind = "revenue" if any(word in lower for word in ("received", "deposit", "credited", "salary", "income")) else "expense"
         category = _category(f"{address} {body}")
         items.append({"type": kind, "amount": amount, "currency": currency, "category": category, "subject": address, "date": message.get("dateEpochMs"), "source": "sms", "confidence": "medium"})

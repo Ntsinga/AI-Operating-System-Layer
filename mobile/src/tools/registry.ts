@@ -251,6 +251,7 @@ export const setApplicationSuspendedTool = {
     required: ['packageName', 'suspended'],
   },
   execute: (input: SetApplicationSuspendedInput) => getDevicePolicyModule().setApplicationSuspended(input.packageName, input.suspended),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<SetApplicationSuspendedInput, ApplicationPolicyResult>;
 
 export type SetApplicationsSuspendedInput = { packageNames: string[]; suspended: boolean };
@@ -267,6 +268,7 @@ export const setApplicationsSuspendedTool = {
     required: ['packageNames', 'suspended'],
   },
   execute: (input: SetApplicationsSuspendedInput) => getDevicePolicyModule().setApplicationsSuspended(input.packageNames, input.suspended),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<SetApplicationsSuspendedInput, ApplicationPolicyResult>;
 
 export type SetKioskModeInput = { enabled: boolean };
@@ -280,6 +282,7 @@ export const setKioskModeTool = {
     required: ['enabled'],
   },
   execute: (input: SetKioskModeInput) => getDevicePolicyModule().setKioskMode(input.enabled),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<SetKioskModeInput, { enabled: boolean; applied: boolean }>;
 
 export type StartFocusPolicyInput = { packageNames: string[]; durationMinutes: number };
@@ -288,6 +291,7 @@ export const startFocusPolicyTool = {
   description: 'Suspends a confirmed group of apps now and automatically restores them after durationMinutes, including when AI-OS is closed. Requires Device Owner.',
   parameters: { type: 'object', properties: { packageNames: { type: 'array', description: 'Internal app ids selected from get_installed_apps.' }, durationMinutes: { type: 'number', description: 'How long to block them, from 1 minute to 7 days.' } }, required: ['packageNames', 'durationMinutes'] },
   execute: (input: StartFocusPolicyInput) => getFocusPolicyModule().startFocus(input.packageNames, input.durationMinutes),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<StartFocusPolicyInput, FocusPolicyResult>;
 
 export const getFocusPolicyStatusTool = {
@@ -298,6 +302,7 @@ export const getFocusPolicyStatusTool = {
 export const stopFocusPolicyTool = {
   name: 'stop_focus_policy', description: 'Stops the active timed focus policy and restores the selected apps after explicit user confirmation.', parameters: { type: 'object', properties: {} },
   execute: () => getFocusPolicyModule().stopFocus(),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<void, FocusPolicyResult>;
 
 export type SetAlarmInput = { hour: number; minute: number; label?: string };
@@ -389,6 +394,7 @@ export const createGoogleCalendarEventTool = {
   name: 'create_google_calendar_event', description: 'Creates a Google Calendar follow-up event after explicit confirmation. Requires connected Google OAuth.',
   parameters: { type: 'object', properties: { title: { type: 'string', description: 'Event title.' }, startTime: { type: 'string', description: 'RFC3339 start time with timezone.' }, endTime: { type: 'string', description: 'RFC3339 end time with timezone.' }, description: { type: 'string', description: 'Event notes.' } }, required: ['title', 'startTime', 'endTime', 'description'] },
   execute: (input: { title: string; startTime: string; endTime: string; description: string }) => createGoogleCalendarEvent(input.title, input.startTime, input.endTime, input.description),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<{ title: string; startTime: string; endTime: string; description: string }, unknown>;
 export const getMonthlyFinancesTool = {
   name: 'get_monthly_finances', description: 'Searches connected Gmail for likely expenses and revenue in a month, extracts candidate amounts, and returns reconciled totals with source IDs and confidence. Read-only; every item requires review.',
@@ -528,6 +534,7 @@ export const sendSmsTool = {
     required: ['phoneNumber', 'message'],
   },
   execute: (input: SendSmsInput) => getSmsModule().sendSms(input.phoneNumber, input.message),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<SendSmsInput, SendSmsResult>;
 
 export const makeCallTool = {
@@ -542,6 +549,7 @@ export const makeCallTool = {
     required: ['phoneNumber'],
   },
   execute: (input: MakeCallInput) => getPhoneCallModule().makeCall(input.phoneNumber),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<MakeCallInput, MakeCallResult>;
 
 export const setScreenBrightnessTool = {
@@ -556,6 +564,7 @@ export const setScreenBrightnessTool = {
     required: ['level'],
   },
   execute: (input: SetScreenBrightnessInput) => getSystemSettingsModule().setScreenBrightness(input.level),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<SetScreenBrightnessInput, SetScreenBrightnessResult>;
 
 export const takePhotoTool = {
@@ -611,6 +620,7 @@ export const setWallpaperTool = {
     required: ['imageUri', 'target'],
   },
   execute: (input: SetWallpaperInput) => getWallpaperModule().setWallpaper(input.imageUri, input.target),
+  confirmBeforeExecute: true,
 } satisfies ToolDefinition<SetWallpaperInput, SetWallpaperResult>;
 
 export const browseForImageTool = {

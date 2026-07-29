@@ -8,7 +8,10 @@ AMOUNT_RE = re.compile(r"(?P<currency>UGX|USD|EUR|GBP|KES|TZS|\$|€|£)\s*([0-9
 # "Total"-shaped labels outrank a bare number: a receipt/invoice usually has several dollar
 # amounts (line items, tax, subtotal) and the one adjacent to one of these labels is far more
 # likely to be the actual charge than whichever number happens to appear last in the text.
-TOTAL_LABEL_RE = re.compile(r"(grand total|total due|total charged|amount due|amount charged|total paid|amount paid|balance due|total)", re.I)
+# The leading \b matters: without it, "total" matches inside "Subtotal" too, and since Subtotal
+# usually appears right before an earlier (smaller, wrong) line-item amount, it would often win
+# the "nearest label" comparison over the real "Total:" label later in the message.
+TOTAL_LABEL_RE = re.compile(r"\b(grand total|total due|total charged|amount due|amount charged|total paid|amount paid|balance due|total)", re.I)
 TOTAL_LABEL_WINDOW = 40
 
 

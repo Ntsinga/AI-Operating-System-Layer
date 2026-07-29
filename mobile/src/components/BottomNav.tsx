@@ -4,9 +4,9 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { brandGradient, colors, gradientEnd, gradientStart } from '../theme';
-import { ChatIcon, ToolsIcon } from './TabIcons';
+import { ChatIcon, SettingsIcon } from './TabIcons';
 
-export type TabKey = 'chat' | 'tools';
+export type TabKey = 'chat' | 'settings';
 
 type Props = {
   active: TabKey;
@@ -15,10 +15,12 @@ type Props = {
 
 const TABS: { key: TabKey; label: string; Icon: ComponentType<{ color: string; size?: number }> }[] = [
   { key: 'chat', label: 'Chat', Icon: ChatIcon },
-  { key: 'tools', label: 'Tools', Icon: ToolsIcon },
+  { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
-// Two-tab bottom navigation: Chat (the AI assistant) and Tools (individual capabilities).
+// Two-tab bottom navigation: Chat (the live AI conversation) and Settings (assistant controls,
+// insights, and learned procedures - renamed from "Tools" once individual tool cards were cut
+// down to just this handful, see SettingsScreen.tsx).
 // The active tab gets a gradient pill so it reads against the dark bar.
 export function BottomNav({ active, onChange }: Props) {
   const insets = useSafeAreaInsets();

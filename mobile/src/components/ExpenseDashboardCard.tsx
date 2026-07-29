@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { analyzeSmsFinances, extractReceipt, getMonthlyFinances, type MonthlyFinance } from '../planner/expenseClient';
 import { getSmsInboxModule } from '../native/SmsInbox';
 import { getMediaCaptureModule } from '../native/MediaCapture';
@@ -10,7 +10,9 @@ import { GradientButton } from './GradientButton';
 
 const SMS_LOOKBACK_HOURS = 744; // native cap (31 days); backend filters to the requested day/month
 type Mode = 'month' | 'day';
-type BusySource = 'gmail' | 'sms' | 'receipt' | null;
+type Source = 'gmail' | 'sms' | 'both';
+type BusySource = Source | 'receipt' | null;
+type ExpenseItem = MonthlyFinance['items'][number];
 
 function emptyFinance(year: number, month: number): MonthlyFinance {
   return { year, month, items: [], totals: { expense: {}, revenue: {} }, note: '' };
@@ -30,6 +32,12 @@ export function ExpenseDashboardCard() {
   const [busySource, setBusySource] = useState<BusySource>(null);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [manualAmount, setManualAmount] = useState('');
+  const [manualCurrency, setManualCurrency] = useState('UGX');
+  const [manualCategory, setManualCategory] = useState('');
+  const [manualSubject, setManualSubject] = useState('');
+  const [manualType, setManualType] = useState<'expense' | 'revenue'>('expense');
 
   const year = anchor.getFullYear();
   const month = anchor.getMonth() + 1;
@@ -52,25 +60,52 @@ export function ExpenseDashboardCard() {
     if (response.ok) setAnalysis(json.analysis ?? '');
   }
 
-  async function loadFromGmail() {
-    setBusySource('gmail'); setError(null);
-    try { await applyResult(await getMonthlyFinances(year, month, day)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Finance load failed.'); }
-    finally { setBusySource(null); }
+  function addItem(item: ExpenseItem) {
+    const base = data ?? emptyFinance(year, month);
+    setData(withRecomputedTotals({ ...base, items: [...base.items, item] }));
   }
 
-  async function loadFromSms() {
-    setBusySource('sms'); setError(null);
+  // Single entry point instead of separate Gmail/SMS buttons - asks which source(s) once, then
+  // merges results into one breakdown. "both" tolerates one source failing (e.g. Gmail not
+  // connected) and still shows whatever the other source found, rather than an all-or-nothing load.
+  function promptLoadSource() {
+    Alert.alert('Load expenses from...', undefined, [
+      { text: 'Gmail', onPress: () => void loadExpenses('gmail') },
+      { text: 'SMS', onPress: () => void loadExpenses('sms') },
+      { text: 'Both', onPress: () => void loadExpenses('both') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
+  async function loadExpenses(source: Source) {
+    setBusySource(source); setError(null);
     try {
-      const messages = await getSmsInboxModule().getRecentSms(SMS_LOOKBACK_HOURS);
-      await applyResult(await analyzeSmsFinances(year, month, messages, day));
-    } catch (e) { setError(e instanceof Error ? e.message : 'SMS finance load failed.'); }
+      if (source === 'gmail') { await applyResult(await getMonthlyFinances(year, month, day)); return; }
+      if (source === 'sms') {
+        const messages = await getSmsInboxModule().getRecentSms(SMS_LOOKBACK_HOURS);
+        await applyResult(await analyzeSmsFinances(year, month, messages, day));
+        return;
+      }
+      const [gmail, sms] = await Promise.allSettled([
+        getMonthlyFinances(year, month, day),
+        getSmsInboxModule().getRecentSms(SMS_LOOKBACK_HOURS).then((messages) => analyzeSmsFinances(year, month, messages, day)),
+      ]);
+      if (gmail.status === 'rejected' && sms.status === 'rejected') throw gmail.reason;
+      if (gmail.status === 'rejected') setError(gmail.reason instanceof Error ? `${gmail.reason.message} (showing SMS results only)` : 'Gmail load failed.');
+      if (sms.status === 'rejected') setError(sms.reason instanceof Error ? `${sms.reason.message} (showing Gmail results only)` : 'SMS load failed.');
+      const items = [
+        ...(gmail.status === 'fulfilled' ? gmail.value.items : []),
+        ...(sms.status === 'fulfilled' ? sms.value.items : []),
+      ];
+      await applyResult(withRecomputedTotals({ ...emptyFinance(year, month), items }));
+    } catch (e) { setError(e instanceof Error ? e.message : 'Finance load failed.'); }
     finally { setBusySource(null); }
   }
 
   // Scans a receipt and appends it as a candidate expense to whatever is already loaded, rather
   // than re-running /expenses/analyze (that costs an OpenAI call per load - not worth spending
-  // again just to add one item the user hasn't even reviewed yet).
+  // again just to add one item the user hasn't even reviewed yet). The panel stays open
+  // afterward so several receipts/manual entries can be added back to back.
   async function scanReceipt() {
     setBusySource('receipt'); setError(null);
     try {
@@ -78,8 +113,8 @@ export function ExpenseDashboardCard() {
       const receipt = await extractReceipt(photo.uri);
       const total = Number(receipt.total);
       if (!total || Number.isNaN(total)) throw new Error('Could not read a total from that receipt.');
-      const item = {
-        type: 'expense' as const,
+      addItem({
+        type: 'expense',
         amount: total,
         currency: String(receipt.currency ?? '').toUpperCase() || 'UGX',
         category: String(receipt.category ?? '') || 'Other',
@@ -87,11 +122,26 @@ export function ExpenseDashboardCard() {
         date: String(receipt.date ?? new Date().toISOString()),
         sourceId: `receipt-${Date.now()}`,
         confidence: String(receipt.confidence ?? 'medium'),
-      };
-      const base = data ?? emptyFinance(year, month);
-      setData(withRecomputedTotals({ ...base, items: [...base.items, item] }));
+      });
     } catch (e) { setError(e instanceof Error ? e.message : 'Receipt scan failed.'); }
     finally { setBusySource(null); }
+  }
+
+  function addManualExpense() {
+    const amount = Number(manualAmount);
+    if (!amount || Number.isNaN(amount)) { setError('Enter a valid amount.'); return; }
+    setError(null);
+    addItem({
+      type: manualType,
+      amount,
+      currency: manualCurrency.trim().toUpperCase() || 'UGX',
+      category: manualCategory.trim() || 'Other',
+      subject: manualSubject.trim() || 'Manual entry',
+      date: new Date().toISOString(),
+      sourceId: `manual-${Date.now()}`,
+      confidence: 'high',
+    });
+    setManualAmount(''); setManualCategory(''); setManualSubject('');
   }
 
   async function connectGoogle() {
@@ -110,7 +160,7 @@ export function ExpenseDashboardCard() {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>Finance overview</Text>
-      <Text style={styles.description}>Review expenses and revenue by day or month, derived from your connected Gmail, on-device SMS, or scanned receipts. Values remain candidates until you confirm them.</Text>
+      <Text style={styles.description}>Review expenses and revenue by day or month. Values remain candidates until you confirm them.</Text>
 
       <View style={styles.modeRow}>
         <Pressable style={[styles.modePill, mode === 'month' && styles.modePillActive]} onPress={() => setMode('month')}>
@@ -128,10 +178,32 @@ export function ExpenseDashboardCard() {
       </View>
 
       <View style={styles.row}>
-        <GradientButton label={busySource === 'gmail' ? 'Analyzing...' : 'Load from Gmail'} disabled={busy} onPress={() => void loadFromGmail()} style={styles.buttonThird} />
-        <GradientButton label={busySource === 'sms' ? 'Analyzing...' : 'Load from SMS'} disabled={busy} onPress={() => void loadFromSms()} style={styles.buttonThird} />
-        <GradientButton label={busySource === 'receipt' ? 'Scanning...' : 'Scan Receipt'} disabled={busy} onPress={() => void scanReceipt()} style={styles.buttonThird} />
+        <GradientButton label={busySource === 'gmail' || busySource === 'sms' || busySource === 'both' ? 'Loading...' : 'Load expenses'} disabled={busy} onPress={promptLoadSource} style={styles.buttonHalf} />
+        <GradientButton label={addOpen ? 'Close' : 'Add expense'} onPress={() => setAddOpen((value) => !value)} style={styles.buttonHalf} />
       </View>
+
+      {addOpen ? (
+        <View style={styles.addPanel}>
+          <Text style={styles.addPanelHint}>Type an expense or scan a receipt - this stays open so you can add several in a row.</Text>
+          <GradientButton label={busySource === 'receipt' ? 'Scanning...' : 'Scan receipt'} disabled={busy} onPress={() => void scanReceipt()} style={styles.scanButton} />
+          <View style={styles.divider} />
+          <View style={styles.modeRow}>
+            <Pressable style={[styles.modePill, manualType === 'expense' && styles.modePillActive]} onPress={() => setManualType('expense')}>
+              <Text style={[styles.modePillText, manualType === 'expense' && styles.modePillTextActive]}>Expense</Text>
+            </Pressable>
+            <Pressable style={[styles.modePill, manualType === 'revenue' && styles.modePillActive]} onPress={() => setManualType('revenue')}>
+              <Text style={[styles.modePillText, manualType === 'revenue' && styles.modePillTextActive]}>Revenue</Text>
+            </Pressable>
+          </View>
+          <View style={styles.row}>
+            <TextInput style={[styles.input, styles.buttonHalf]} value={manualAmount} onChangeText={setManualAmount} placeholder="Amount" placeholderTextColor={colors.textMuted} keyboardType="numeric" />
+            <TextInput style={[styles.input, styles.buttonHalf]} value={manualCurrency} onChangeText={setManualCurrency} placeholder="Currency" placeholderTextColor={colors.textMuted} autoCapitalize="characters" />
+          </View>
+          <TextInput style={styles.input} value={manualCategory} onChangeText={setManualCategory} placeholder="Category (e.g. Food)" placeholderTextColor={colors.textMuted} />
+          <TextInput style={styles.input} value={manualSubject} onChangeText={setManualSubject} placeholder="Merchant / description" placeholderTextColor={colors.textMuted} />
+          <GradientButton label="Add" disabled={!manualAmount.trim()} onPress={addManualExpense} />
+        </View>
+      ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {needsGoogleConnect ? <GradientButton label={connecting ? 'Opening Google sign-in...' : 'Connect Google Account'} disabled={connecting} onPress={() => void connectGoogle()} style={styles.connectButton} /> : null}
@@ -158,17 +230,22 @@ const styles = StyleSheet.create({
   title: { color: colors.textPrimary, fontSize: 16, fontWeight: '800' },
   description: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginBottom: 12, marginTop: 6 },
   modeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  modePill: { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: 8, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 8 },
+  modePill: { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: 8, borderWidth: 1, flex: 1, paddingHorizontal: 14, paddingVertical: 8 },
   modePillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-  modePillText: { color: colors.textSecondary, fontSize: 13, fontWeight: '700' },
+  modePillText: { color: colors.textSecondary, fontSize: 13, fontWeight: '700', textAlign: 'center' },
   modePillTextActive: { color: colors.onAccent },
   stepperRow: { alignItems: 'center', flexDirection: 'row', gap: 8, justifyContent: 'space-between', marginBottom: 10 },
   stepperButton: { alignItems: 'center', backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: 8, borderWidth: 1, height: 40, justifyContent: 'center', width: 40 },
   stepperArrow: { color: colors.textPrimary, fontSize: 20, fontWeight: '700' },
   stepperLabel: { color: colors.textPrimary, flex: 1, fontSize: 15, fontWeight: '700', textAlign: 'center' },
   row: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  buttonThird: { flex: 1 },
+  buttonHalf: { flex: 1 },
   connectButton: { marginTop: 10 },
+  addPanel: { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderRadius: 10, borderWidth: 1, marginBottom: 10, padding: 12 },
+  addPanelHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
+  scanButton: { marginBottom: 4 },
+  divider: { borderColor: colors.border, borderTopWidth: 1, marginBottom: 10, marginTop: 12 },
+  input: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 8, borderWidth: 1, color: colors.textPrimary, marginBottom: 8, minHeight: 44, paddingHorizontal: 10 },
   summary: { color: colors.textSecondary, fontSize: 12, marginTop: 12 },
   barRow: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 10 },
   category: { color: colors.textSecondary, width: 90 },

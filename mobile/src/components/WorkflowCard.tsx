@@ -64,12 +64,19 @@ export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { ini
     setAssistantMessage(null);
 
     if (response.status === 'awaiting_confirmation') {
-      // Tool proposals are executed immediately so a voice command does not stop at a
-      // redundant "Confirm & run" tap. Risk-sensitive tools should still ask a focused question
-      // through the workflow's awaiting_reply state before they reach this point.
+      const tool = tools.find((candidate) => candidate.name === response.proposedTool.toolName);
       setProposal(response.proposedTool);
-      setPhase('running');
-      void executeProposal(response.proposedTool, response.threadId);
+      if (tool?.confirmBeforeExecute) {
+        // Calls, messages, wallpaper changes, settings changes, etc. (see
+        // tools/types.ts:confirmBeforeExecute) require an explicit tap before they run - this
+        // is the real confirmation gate the backend harness prompt already claims exists.
+        setPhase('awaiting_confirmation');
+      } else {
+        // Everything else auto-executes immediately so a voice command doesn't stop at a
+        // redundant "Confirm & run" tap.
+        setPhase('running');
+        void executeProposal(response.proposedTool, response.threadId);
+      }
     } else if (response.status === 'awaiting_reply') {
       setAssistantMessage(response.message);
       setPhase('awaiting_reply');
@@ -175,10 +182,15 @@ export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { ini
     }
   }
 
+  async function handleConfirm() {
+    if (!proposal || !threadId || phase !== 'awaiting_confirmation') return;
+    void executeProposal(proposal, threadId);
+  }
+
   async function handleStop() {
-    if (threadId && phase === 'awaiting_reply') {
+    if (threadId && (phase === 'awaiting_reply' || phase === 'awaiting_confirmation')) {
       try {
-        await completeWorkflow(threadId, 'succeeded');
+        await completeWorkflow(threadId, phase === 'awaiting_confirmation' ? 'cancelled' : 'succeeded');
       } catch {
         // The local workflow can still be stopped if the backend is unavailable.
       }
@@ -244,20 +256,35 @@ export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { ini
 
       {proposal ? (
         <View style={styles.proposalBox}>
-          <Text style={styles.proposalLabel}>Proposed next step</Text>
+          <Text style={styles.proposalLabel}>{phase === 'awaiting_confirmation' ? 'Confirm this action' : 'Proposed next step'}</Text>
           <Text style={styles.proposalText} selectable>
             {JSON.stringify(proposal, null, 2)}
           </Text>
           <View style={styles.proposalActions}>
-            <Text style={styles.autoRunNotice}>{isBusy ? 'Executing automatically...' : 'Executed'}</Text>
-            <Pressable
-              accessibilityRole="button"
-              disabled={isBusy}
-              onPress={handleStop}
-              style={({ pressed }) => [styles.cancelButton, pressed && !isBusy && styles.buttonPressed]}
-            >
-              <Text style={styles.cancelButtonText}>Stop</Text>
-            </Pressable>
+            {phase === 'awaiting_confirmation' ? (
+              <>
+                <GradientButton label="Confirm & run" onPress={() => void handleConfirm()} style={styles.flexButton} />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={handleStop}
+                  style={({ pressed }) => [styles.cancelButton, pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={styles.autoRunNotice}>{isBusy ? 'Executing automatically...' : 'Executed'}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isBusy}
+                  onPress={handleStop}
+                  style={({ pressed }) => [styles.cancelButton, pressed && !isBusy && styles.buttonPressed]}
+                >
+                  <Text style={styles.cancelButtonText}>Stop</Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </View>
       ) : null}

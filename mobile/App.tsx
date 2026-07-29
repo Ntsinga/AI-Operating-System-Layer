@@ -6,7 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { BottomNav, type TabKey } from './src/components/BottomNav';
 import { BrandMark } from './src/components/BrandMark';
 import { ChatScreen } from './src/screens/ChatScreen';
-import { ToolsScreen } from './src/screens/ToolsScreen';
+import { SettingsScreen } from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
 
 export default function App() {
@@ -32,7 +32,7 @@ export default function App() {
       } else {
         Alert.alert('Google connection failed', message ? decodeURIComponent(message.replace(/\+/g, ' ')) : 'Please try again.');
       }
-      setTab('tools');
+      setTab('settings');
       return true;
     }
 
@@ -66,7 +66,7 @@ export default function App() {
           </View>
         </View>
 
-        <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} onVoiceCommandConsumed={() => setVoiceCommand(null)} /> : <ToolsScreen />}</View>
+        <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} onVoiceCommandConsumed={() => setVoiceCommand(null)} /> : <SettingsScreen />}</View>
 
         <BottomNav active={tab} onChange={setTab} />
       </View>
