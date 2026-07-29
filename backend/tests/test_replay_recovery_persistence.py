@@ -62,6 +62,32 @@ class CorrectStepAndSaveVersionTests(unittest.TestCase):
         result = procedural_memory.correct_step_and_save_version(original_id, 99, {"text": "x"})
         self.assertIsNone(result)
 
+    def test_second_correction_in_the_same_replay_builds_on_the_first_not_the_original(self):
+        # Regression test for the Ride 33 bug (ERROR_LOG.md 2026-07-29): a procedure with two
+        # independently-broken tap steps gets corrected twice in the same replay run, and native
+        # code always passes the ORIGINAL procedure id to persist each correction (it has no way
+        # to know a new version was just created moments earlier). The second correction must not
+        # silently discard the first one.
+        history = [
+            {"toolName": "tap", "arguments": {"action": "tap", "resourceId": "destination_field"}},
+            {"toolName": "text_input", "arguments": {"action": "text_input", "resourceId": "edit_text", "value": "Ntind"}},
+            {"toolName": "tap", "arguments": {"action": "tap", "text": "2.4 mi"}},
+            {"toolName": "tap", "arguments": {"action": "tap", "resourceId": "destination_field"}},
+            {"toolName": "text_input", "arguments": {"action": "text_input", "resourceId": "edit_text", "value": "Ntind"}},
+            {"toolName": "tap", "arguments": {"action": "tap", "text": "2.4 mi"}},
+        ]
+        procedural_memory.save_procedure("Ride 33", history, scope="com.ubercab")
+        original_id = next(p["id"] for p in procedural_memory.list_procedures() if p["intent"] == "Ride 33")
+
+        # Native always persists corrections against original_id, never the newer version's id.
+        procedural_memory.correct_step_and_save_version(original_id, 2, {"text": "Ntinda View Crescent, Kampala, Uganda"})
+        final = procedural_memory.correct_step_and_save_version(original_id, 5, {"text": "Ntinda View Crescent"})
+
+        self.assertIsNotNone(final)
+        self.assertEqual(final["version"], 3)
+        self.assertEqual(final["steps"][2]["arguments"]["text"], "Ntinda View Crescent, Kampala, Uganda")
+        self.assertEqual(final["steps"][5]["arguments"]["text"], "Ntinda View Crescent")
+
 
 if __name__ == "__main__":
     unittest.main()
