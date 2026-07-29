@@ -189,6 +189,13 @@ class LearningWatcherService : AccessibilityService() {
   fun replay(actions: List<Map<String, String>>, values: Map<String, String>, completion: Map<String, String>? = null, requestedSurface: String? = null, backendBaseUrl: String? = null, procedureId: Int? = null): Map<String, Any> {
     var executed = 0; var skipped = 0
     var lastTextInputValue: String? = null
+    // True when lastTextInputValue came from the caller's one-time runtimeValues override (e.g.
+    // the planner substituting a different destination into a taught ride procedure) rather than
+    // the value originally recorded during teaching. Gates recovery persistence below: replaying
+    // to a different one-off destination is exactly the "runtime values must never become
+    // persistent memory" case from os_harness.md, so a recovery resolution driven by an override
+    // must not get saved as a correction to what the taught procedure normally does.
+    var lastTextInputWasRuntimeOverride = false
     var targetSurfaceLost = false
     var lastConfirmedCheckpoint = 0
     val trace = mutableListOf<Map<String, Any?>>()
@@ -264,6 +271,7 @@ class LearningWatcherService : AccessibilityService() {
           mapOf("visibleTexts" to currentVisibleTexts())
         )
         val key = action["resourceId"] ?: action["contentDescription"] ?: action["fieldKey"] ?: action["text"]
+        val usedRuntimeOverride = key != null && values.containsKey(key)
         val value = key?.let { values[it] } ?: action["value"]
         val occurrence = action["resourceIdOccurrence"]?.toIntOrNull()
         val node = waitForReadyNode(
@@ -278,11 +286,12 @@ class LearningWatcherService : AccessibilityService() {
         addTrace("step_started", details = mapOf("visibleTexts" to currentVisibleTexts()))
         if (node == null) {
           if (!backendBaseUrl.isNullOrBlank()) {
-            val outcome = attemptTextInputRecovery(backendBaseUrl, action, procedureId, index)
+            val outcome = attemptTextInputRecovery(backendBaseUrl, action, procedureId, index, value, usedRuntimeOverride)
             addTrace(outcome.event, outcome.level, outcome.details)
             if (outcome.executed) {
               executed++
               outcome.recoveredTextValue?.let { lastTextInputValue = it }
+              lastTextInputWasRuntimeOverride = usedRuntimeOverride
             } else {
               skipped++
             }
@@ -312,6 +321,7 @@ class LearningWatcherService : AccessibilityService() {
           }
           executed++
           lastTextInputValue = value
+          lastTextInputWasRuntimeOverride = usedRuntimeOverride
           addTrace("step_executed", details = mapOf("attempted" to attempted, "fieldKey" to key, "textOutcome" to outcome, "visibleTexts" to currentVisibleTexts()))
         } else {
           skipped++
@@ -385,7 +395,7 @@ class LearningWatcherService : AccessibilityService() {
             addTrace("step_skipped", "warn", mapOf("reason" to "location_suggestion_fallback_click_failed", "query" to queryValue, "rootSurface" to currentRootSurface(), "visibleTexts" to currentVisibleTexts()))
           }
         } else if (!backendBaseUrl.isNullOrBlank()) {
-          val outcome = attemptBoundedRecovery(backendBaseUrl, action, selector, lastTextInputValue, procedureId, index)
+          val outcome = attemptBoundedRecovery(backendBaseUrl, action, selector, lastTextInputValue, lastTextInputWasRuntimeOverride, procedureId, index)
           addTrace(outcome.event, outcome.level, outcome.details)
           if (outcome.executed) executed++ else skipped++
         } else {
@@ -433,7 +443,14 @@ class LearningWatcherService : AccessibilityService() {
   // below - never a coordinate or invented resourceId), retry, ask_user (candidate indices for a
   // human to pick from - see RecoveryPromptOverlay), or abort; see backend/app/replay_recovery.py
   // for the safety guard that enforces this server-side too.
-  private fun attemptBoundedRecovery(backendBaseUrl: String, action: Map<String, String>, selector: Map<String, String>, typedValue: String?, procedureId: Int?, stepIndex: Int): RecoveryOutcome {
+  //
+  // typedValueIsEphemeral is true when typedValue came from the caller's one-time runtimeValues
+  // override (e.g. the planner substituting a different ride destination into a taught
+  // procedure - see registry.ts's replayLearnedProcedureTool and os_harness.md's "runtime values
+  // must never become persistent memory" rule) rather than the value recorded during teaching.
+  // Any resolution driven by an override must not be persisted as a correction: the item tapped
+  // is correct for THIS one-off destination, not for what the procedure normally does.
+  private fun attemptBoundedRecovery(backendBaseUrl: String, action: Map<String, String>, selector: Map<String, String>, typedValue: String?, typedValueIsEphemeral: Boolean, procedureId: Int?, stepIndex: Int): RecoveryOutcome {
     val root = rootInActiveWindow
     val elements = collectRecoveryElements(root)
     try {
@@ -454,9 +471,10 @@ class LearningWatcherService : AccessibilityService() {
           } else if (performClick(chosen)) {
             // Self-healing: save the resolved (stable) selector as a new procedure version so a
             // future replay of this same procedure hits the ordinary deterministic match path
-            // and never needs recovery again for this step - see AGENTS.md 2026-07-29.
-            val persisted = if (procedureId != null) persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second) else false
-            RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_select_element", "elementIndex" to chosenIndex, "recoveryReason" to decision.optString("reason"), "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()))
+            // and never needs recovery again for this step - see AGENTS.md 2026-07-29. Skipped
+            // entirely when the typed value was a one-time override (see function doc above).
+            val persisted = maybePersistTapCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second, typedValueIsEphemeral)
+            RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_select_element", "elementIndex" to chosenIndex, "recoveryReason" to decision.optString("reason"), "correctionPersisted" to persisted, "correctionSkippedReason" to if (!persisted && typedValueIsEphemeral) "runtime_override_value_not_persisted" else null, "visibleTexts" to currentVisibleTexts()))
           } else {
             RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_select_element_click_failed", "visibleTexts" to currentVisibleTexts()))
           }
@@ -476,12 +494,21 @@ class LearningWatcherService : AccessibilityService() {
             RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_retry_still_not_found", "visibleTexts" to currentVisibleTexts()))
           }
         }
-        "ask_user" -> askUserToResolveTap(decision, elements, action, typedValue, backendBaseUrl, procedureId, stepIndex)
+        "ask_user" -> askUserToResolveTap(decision, elements, action, typedValue, typedValueIsEphemeral, backendBaseUrl, procedureId, stepIndex)
         else -> RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_aborted", "recoveryReason" to decision.optString("reason"), "visibleTexts" to currentVisibleTexts()))
       }
     } finally {
       elements.forEach { it.first.recycle() }
     }
+  }
+
+  // Persists a tap-recovery correction unless the value that drove it was a one-time runtime
+  // override - see attemptBoundedRecovery's doc comment. Centralizes the guard so none of the
+  // three tap-recovery resolution paths (select_element, ask_user select, ask_user free-text) can
+  // forget it.
+  private fun maybePersistTapCorrection(backendBaseUrl: String, procedureId: Int?, stepIndex: Int, chosenElement: JSONObject, isEphemeral: Boolean): Boolean {
+    if (procedureId == null || isEphemeral) return false
+    return persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenElement)
   }
 
   // The backend couldn't safely auto-resolve (ambiguous typed-value matches, or no confident
@@ -495,6 +522,7 @@ class LearningWatcherService : AccessibilityService() {
     elements: List<Pair<AccessibilityNodeInfo, JSONObject>>,
     action: Map<String, String>,
     typedValue: String?,
+    typedValueIsEphemeral: Boolean,
     backendBaseUrl: String,
     procedureId: Int?,
     stepIndex: Int,
@@ -513,8 +541,8 @@ class LearningWatcherService : AccessibilityService() {
       is RecoveryPromptOverlay.Answer.Selected -> {
         val chosenPair = candidatePairs[answer.index]
         if (performClick(chosenPair.first)) {
-          val persisted = if (procedureId != null) persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second) else false
-          RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_ask_user_select", "chosen" to chosenPair.second.optString("text"), "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()))
+          val persisted = maybePersistTapCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second, typedValueIsEphemeral)
+          RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_ask_user_select", "chosen" to chosenPair.second.optString("text"), "correctionPersisted" to persisted, "correctionSkippedReason" to if (!persisted && typedValueIsEphemeral) "runtime_override_value_not_persisted" else null, "visibleTexts" to currentVisibleTexts()))
         } else {
           RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_click_failed", "visibleTexts" to currentVisibleTexts()))
         }
@@ -528,8 +556,8 @@ class LearningWatcherService : AccessibilityService() {
         if (rematched.size == 1) {
           val chosenPair = rematched[0]
           if (performClick(chosenPair.first)) {
-            val persisted = if (procedureId != null) persistRecoveryCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second) else false
-            RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_ask_user_free_text", "typedAnswer" to answer.text, "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()))
+            val persisted = maybePersistTapCorrection(backendBaseUrl, procedureId, stepIndex, chosenPair.second, typedValueIsEphemeral)
+            RecoveryOutcome(true, "step_executed", "info", mapOf("attempted" to "recovery_ask_user_free_text", "typedAnswer" to answer.text, "correctionPersisted" to persisted, "correctionSkippedReason" to if (!persisted && typedValueIsEphemeral) "runtime_override_value_not_persisted" else null, "visibleTexts" to currentVisibleTexts()))
           } else {
             RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_ask_user_free_text_click_failed", "visibleTexts" to currentVisibleTexts()))
           }
@@ -547,7 +575,13 @@ class LearningWatcherService : AccessibilityService() {
   // always asks a human rather than ever falling back to a model: which editable field (if more
   // than one is visible) and what value to type into it. The typed value only ever comes from
   // that synchronous human answer - see RecoveryPromptOverlay's header comment.
-  private fun attemptTextInputRecovery(backendBaseUrl: String?, action: Map<String, String>, procedureId: Int?, stepIndex: Int): RecoveryOutcome {
+  //
+  // runtimeOverrideValue/isRuntimeOverride mirror attemptBoundedRecovery's typedValueIsEphemeral:
+  // if the caller supplied a one-time runtimeValues override for this field (e.g. a different
+  // destination for this one ride), it's used as the prefill so the person isn't asked to retype
+  // it, but the resulting correction is never persisted - only a value that traces back to what
+  // was actually taught is safe to remember as the procedure's new default.
+  private fun attemptTextInputRecovery(backendBaseUrl: String?, action: Map<String, String>, procedureId: Int?, stepIndex: Int, runtimeOverrideValue: String?, isRuntimeOverride: Boolean): RecoveryOutcome {
     val editableFields = collectEditableFields(rootInActiveWindow)
     try {
       if (editableFields.isEmpty()) {
@@ -566,7 +600,7 @@ class LearningWatcherService : AccessibilityService() {
       } ?: return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_text_input_field_choice_cancelled_or_timed_out", "visibleTexts" to currentVisibleTexts()))
 
       val fieldLabel = chosenField.second.optString("text").ifBlank { chosenField.second.optString("contentDescription").ifBlank { "this field" } }
-      val prefill = action["value"] ?: action["text"] ?: ""
+      val prefill = runtimeOverrideValue ?: action["value"] ?: action["text"] ?: ""
       val typedValue = RecoveryPromptOverlay.askText(this, "What should I type into \"$fieldLabel\"?", "The originally taught value no longer matches - confirm or change it.", prefill)
       if (typedValue.isNullOrBlank()) {
         return RecoveryOutcome(false, "step_skipped", "warn", mapOf("reason" to "recovery_text_input_cancelled_or_timed_out", "visibleTexts" to currentVisibleTexts()))
@@ -579,10 +613,10 @@ class LearningWatcherService : AccessibilityService() {
         chosenField.second.optString("resourceId", "").takeIf { it.isNotBlank() }?.let { put("resourceId", it) }
         chosenField.second.optString("contentDescription", "").takeIf { it.isNotBlank() }?.let { put("contentDescription", it) }
       }
-      val persisted = if (procedureId != null && !backendBaseUrl.isNullOrBlank()) persistCorrectedArguments(backendBaseUrl, procedureId, stepIndex, correctedArguments) else false
+      val persisted = if (procedureId != null && !backendBaseUrl.isNullOrBlank() && !isRuntimeOverride) persistCorrectedArguments(backendBaseUrl, procedureId, stepIndex, correctedArguments) else false
       return RecoveryOutcome(
         true, "step_executed", "info",
-        mapOf("attempted" to "recovery_text_input_ask_user", "answeredValue" to typedValue, "fieldLabel" to fieldLabel, "correctionPersisted" to persisted, "visibleTexts" to currentVisibleTexts()),
+        mapOf("attempted" to "recovery_text_input_ask_user", "answeredValue" to typedValue, "fieldLabel" to fieldLabel, "correctionPersisted" to persisted, "correctionSkippedReason" to if (!persisted && isRuntimeOverride) "runtime_override_value_not_persisted" else null, "visibleTexts" to currentVisibleTexts()),
         recoveredTextValue = typedValue,
       )
     } finally {
