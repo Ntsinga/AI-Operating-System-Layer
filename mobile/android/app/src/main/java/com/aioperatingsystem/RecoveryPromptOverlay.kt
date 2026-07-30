@@ -156,6 +156,39 @@ object RecoveryPromptOverlay {
     return result
   }
 
+  // Pure yes/no gate - no candidate list, no text field. Used to confirm a single, already-
+  // identified action before executing it (e.g. an inferred tap whose target was a confident
+  // guess at teach time, not a certain TYPE_VIEW_CLICKED capture). Defaults to false on cancel
+  // or timeout - an unconfirmed action never proceeds silently.
+  fun askConfirm(service: AccessibilityService, title: String, subtitle: String?, confirmLabel: String = "Yes, do this", timeoutMs: Long = 45000): Boolean {
+    val latch = CountDownLatch(1)
+    var confirmed = false
+    var overlayView: View? = null
+    val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    Handler(Looper.getMainLooper()).post {
+      val view = buildCard(service, title, subtitle) { card, density ->
+        val row = LinearLayout(service).apply {
+          orientation = LinearLayout.HORIZONTAL
+          setPadding(0, (4 * density).toInt(), 0, 0)
+        }
+        row.addView(ghostButton(service, "Skip this step", density, weight = 1f) {
+          confirmed = false
+          latch.countDown()
+        })
+        row.addView(filledButton(service, confirmLabel, density, weight = 1.4f) {
+          confirmed = true
+          latch.countDown()
+        })
+        card.addView(row)
+      }
+      overlayView = view
+      addOverlay(windowManager, view)
+    }
+    latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+    dismiss(windowManager, overlayView)
+    return confirmed
+  }
+
   // Plain question, no candidate list - e.g. "what should I type into this field?". Returns null
   // on cancel or timeout; the caller decides whether that means abort-the-step.
   fun askText(service: AccessibilityService, title: String, subtitle: String?, prefill: String, timeoutMs: Long = 60000): String? {
@@ -367,14 +400,29 @@ object RecoveryPromptOverlay {
     }
   }
 
+  // Blocks the calling (background replay) thread until the overlay window is actually gone, not
+  // just until its removal has been posted. A fire-and-forget post here previously let replay's
+  // very next step run isTargetSurfaceActive() while this overlay was still the topmost window -
+  // rootInActiveWindow would then report com.aioperatingsystem instead of the target app,
+  // wrongly concluding the target was lost and aborting the entire rest of the replay. See
+  // ERROR_LOG.md 2026-07-30 (replay opened the target app, resolved one recovery prompt, then
+  // immediately aborted with target_surface_lost_abort on the very next step).
   private fun dismiss(windowManager: WindowManager, view: View?) {
     if (view == null) return
+    val latch = CountDownLatch(1)
     Handler(Looper.getMainLooper()).post {
       try {
         windowManager.removeView(view)
       } catch (error: Exception) {
         // Already removed or never attached - ignore.
+      } finally {
+        latch.countDown()
       }
     }
+    latch.await(2000, TimeUnit.MILLISECONDS)
+    // WindowManagerService's own focus/root recalculation can lag a little behind removeView()
+    // returning - a short settle window here is cheap insurance against the same race this whole
+    // function exists to close.
+    Thread.sleep(200)
   }
 }

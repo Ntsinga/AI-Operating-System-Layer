@@ -21,7 +21,14 @@ class LearningWatcherService : AccessibilityService() {
     try {
       lastSurface = event.packageName?.toString() ?: lastSurface
       val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-      if (!prefs.getBoolean(RECORDING, false)) return
+      if (!prefs.getBoolean(RECORDING, false)) {
+        // Never let inferred-tap correlation state leak across sessions (see
+        // applyInferredTapIfConfident) - the next session's first screen must start with no
+        // carried-over candidates from a previous, unrelated app.
+        lastScreenInteractiveCandidates = emptyList()
+        lastScreenSnapshot = null
+        return
+      }
       val surface = event.packageName?.toString() ?: ""
       val targetSurface = prefs.getString(TARGET_SURFACE, "") ?: ""
       val actionType = when (event.eventType) {
@@ -39,7 +46,24 @@ class LearningWatcherService : AccessibilityService() {
         prefs.edit().putBoolean(TARGET_SEEN, true).apply()
       }
       val targetWasSeen = prefs.getBoolean(TARGET_SEEN, false)
-      if (targetWasSeen && targetSurface.isNotBlank() && activeRootPackage.isNotBlank() && activeRootPackage != targetSurface) {
+      // rootInActiveWindow is a separate, flakier query than the event's own packageName - it can
+      // transiently report the launcher (or another window) during a gesture-nav swipe/animation
+      // even though the event that triggered this callback still genuinely came from the target
+      // app. Requiring the event's OWN surface to also disagree avoids killing recording on that
+      // kind of one-frame glitch; see ERROR_LOG.md 2026-07-30 (Airbnb teach session recorded 23s
+      // of navigation then silently, permanently stopped when rootInActiveWindow briefly reported
+      // com.sec.android.app.launcher while the event itself was still eventSurface=com.airbnb.android).
+      //
+      // That alone wasn't enough on gesture-nav devices: a real re-test still auto-stopped a few
+      // seconds later, this time because a genuinely-different-sourced event arrived
+      // (eventSurface=com.android.systemui) right after 100+ rapid "launcher" glimpses - almost
+      // certainly the user's touch grazing the bottom gesture-nav edge during normal scrolling,
+      // not an actual app switch. Transient system-level surfaces (systemui, launcher, IME) are
+      // never trustworthy evidence that the user left the target app, so they're excluded from
+      // this check entirely rather than merely requiring corroboration.
+      if (targetWasSeen && targetSurface.isNotBlank() && activeRootPackage.isNotBlank() && activeRootPackage != targetSurface &&
+        surface != targetSurface && !isTransientNavigationSurface(activeRootPackage) && !isTransientNavigationSurface(surface)
+      ) {
         prefs.edit().putBoolean(RECORDING, false).putString(TARGET_SURFACE, "").apply()
         Log.i("AIOS.Learning", JSONObject()
           .put("event", "recording_auto_stopped")
@@ -157,6 +181,10 @@ class LearningWatcherService : AccessibilityService() {
           val snapshot = screenSnapshot(root, surface)
           action.put("screen", snapshot)
           snapshot.optString("title").takeIf { it.isNotBlank() }?.let { action.put("screenTitle", it.take(120)) }
+          if (action.optString("action") == "screen_transition") {
+            addTransitionEvidence(action, snapshot)
+            applyInferredTapIfConfident(action, snapshot)
+          }
           if (action.optString("action") == "screen_transition" && shouldSkipDuplicateScreen(surface, snapshot)) return
         } else {
           action.put("activeRootSurface", rootSurface)
@@ -329,6 +357,14 @@ class LearningWatcherService : AccessibilityService() {
         }
         node.recycle()
         continue
+      }
+      if (type == "tap" && action["inferred"] == "true" && action["inferenceConfirmed"] != "true") {
+        val confirmed = confirmInferredTapBeforeExecuting(action, backendBaseUrl, procedureId, index)
+        if (!confirmed) {
+          skipped++
+          addTrace("step_skipped", "warn", mapOf("reason" to "inferred_tap_not_confirmed", "inferenceReason" to action["inferenceReason"], "confidence" to action["confidence"], "visibleTexts" to currentVisibleTexts()))
+          continue
+        }
       }
       val readyForAction = waitForScreenReady(if (type == "tap") 6500 else 2500)
       if (!readyForAction) {
@@ -581,6 +617,27 @@ class LearningWatcherService : AccessibilityService() {
   // destination for this one ride), it's used as the prefill so the person isn't asked to retype
   // it, but the resulting correction is never persisted - only a value that traces back to what
   // was actually taught is safe to remember as the procedure's new default.
+  // Inferred taps (applyInferredTapIfConfident, capture-side) are a confident GUESS about which
+  // element caused an observed change during teaching, not a certainty the way a real
+  // TYPE_VIEW_CLICKED capture is. Replaying one without ever checking whether the original guess
+  // was even correct would let a wrong inference execute silently as if it were ground truth -
+  // the wrong-but-real element would still be found and tapped "successfully," with no error
+  // signal at all. Ask once per step, then persist the confirmation via the existing
+  // correct-step endpoint (learn-forward, same pattern as recovery corrections) so future
+  // replays of the same step skip the prompt.
+  private fun confirmInferredTapBeforeExecuting(action: Map<String, String>, backendBaseUrl: String?, procedureId: Int?, stepIndex: Int): Boolean {
+    val label = action["text"]?.takeIf { it.isNotBlank() } ?: action["contentDescription"]?.takeIf { it.isNotBlank() } ?: "this element"
+    val confidencePct = action["confidence"]?.toDoubleOrNull()?.let { (it * 100).toInt() }
+    val reason = action["inferenceReason"]?.takeIf { it.isNotBlank() } ?: "no click event was captured while teaching this step"
+    val confidenceText = if (confidencePct != null) "$confidencePct% confidence" else "confidence unknown"
+    val subtitle = "This step was inferred while teaching ($confidenceText) - $reason."
+    val confirmed = RecoveryPromptOverlay.askConfirm(this, "Tap \"$label\"?", subtitle, confirmLabel = "Yes, tap this")
+    if (confirmed && procedureId != null && !backendBaseUrl.isNullOrBlank()) {
+      persistCorrectedArguments(backendBaseUrl, procedureId, stepIndex, JSONObject().put("inferenceConfirmed", true))
+    }
+    return confirmed
+  }
+
   private fun attemptTextInputRecovery(backendBaseUrl: String?, action: Map<String, String>, procedureId: Int?, stepIndex: Int, runtimeOverrideValue: String?, isRuntimeOverride: Boolean): RecoveryOutcome {
     val editableFields = collectEditableFields(rootInActiveWindow)
     try {
@@ -1008,7 +1065,16 @@ class LearningWatcherService : AccessibilityService() {
 
   private fun isTargetSurfaceActive(surface: String?): Boolean {
     if (surface.isNullOrBlank() || surface == packageName) return true
-    if (currentRootSurface() == surface) return true
+    val currentRoot = currentRootSurface()
+    if (currentRoot == surface) return true
+    // A transient system surface (launcher/systemui/keyboard) or our own app very briefly
+    // becoming the reported root is not reliable evidence the user left the target app - the
+    // same rootInActiveWindow lag already documented for the recording-side auto-stop guard
+    // (ERROR_LOG.md 2026-07-30) applies here too, and is exactly what caused a real-world replay
+    // to abort immediately after a recovery prompt was dismissed. Give the target the benefit of
+    // the doubt here; the next node-search step's own wait/timeout naturally catches a genuine,
+    // sustained loss of the app instead.
+    if (currentRoot.isNullOrBlank() || currentRoot == packageName || isTransientNavigationSurface(currentRoot)) return true
     return false
   }
 
@@ -1473,6 +1539,14 @@ class LearningWatcherService : AccessibilityService() {
     return false
   }
 
+  // Broader than isKeyboardOrSystemUi (used only by the recording auto-stop guard above): also
+  // excludes launchers, since gesture-nav animations routinely surface the launcher for a frame
+  // or two without the user actually leaving the app they're teaching.
+  private fun isTransientNavigationSurface(packageName: String): Boolean {
+    val lower = packageName.lowercase()
+    return isKeyboardOrSystemUi(packageName) || lower.contains("launcher")
+  }
+
   private fun isKeyboardOrSystemUi(packageName: String): Boolean {
     val lower = packageName.lowercase()
     return lower.contains("inputmethod") ||
@@ -1577,6 +1651,204 @@ class LearningWatcherService : AccessibilityService() {
       .put("width", rect.width())
       .put("height", rect.height())
   }
+  // Bounded "inferred tap" detection (ERROR_LOG.md 2026-07-30): some UI frameworks (observed on
+  // Airbnb, almost certainly Compose - see Airbnb's own "Trio" engineering posts) never fire
+  // TYPE_VIEW_CLICKED for a real user touch; every interaction only ever produces this
+  // screen_transition (content-changed) event. A content-changed event alone is NEVER proof of a
+  // tap - scrolling, data loading, and animations all produce it too - so this only upgrades an
+  // event to a recorded "tap" when a single, specific, plausible candidate can be identified with
+  // real corroborating evidence, and it is always tagged inferred/confidence/inferenceReason so
+  // downstream code (and a human reviewing the taught procedure) never mistakes it for an
+  // authoritative TYPE_VIEW_CLICKED capture. Ambiguous or low-signal cases are left completely
+  // untouched as a plain screen_transition - never guessed.
+  private fun applyInferredTapIfConfident(action: JSONObject, snapshot: JSONObject) {
+    try {
+      // Case A: the event's own source node is itself a small, identifiable, actionable element -
+      // the strongest available signal, since THIS SPECIFIC element is what changed.
+      sameNodeInferenceScore(action)?.let { result ->
+        if (result.score >= INFERRED_TAP_CONFIDENCE_THRESHOLD) {
+          action.put("action", "tap")
+          action.put("inferred", true)
+          action.put("confidence", result.score)
+          action.put("inferenceReason", result.reason)
+          return
+        }
+      }
+      // Case B: navigation - the event's own source is the new screen's root (useless on its
+      // own), but exactly one candidate from the PREVIOUS screen's interactive elements plausibly
+      // explains this transition (its label carried over into the new screen). Two or more
+      // plausible candidates, or zero, means we genuinely can't tell - reject rather than guess.
+      navigationInferenceCandidate(snapshot)?.let { (candidate, result) ->
+        if (result.score >= INFERRED_TAP_CONFIDENCE_THRESHOLD) {
+          action.put("action", "tap")
+          action.put("inferred", true)
+          action.put("confidence", result.score)
+          action.put("inferenceReason", result.reason)
+          candidate.optString("resourceId", "").takeIf { it.isNotBlank() }?.let { action.put("resourceId", it) }
+          candidate.optString("text", "").takeIf { it.isNotBlank() }?.let { action.put("text", it) }
+          candidate.optString("contentDescription", "").takeIf { it.isNotBlank() }?.let { action.put("contentDescription", it) }
+        }
+      }
+    } finally {
+      // Always refresh, whether or not this event became an inferred tap and regardless of the
+      // outcome - the next event's Case B correlation must compare against THIS screen's state.
+      lastScreenInteractiveCandidates = extractInteractiveElements(snapshot)
+      // snapshot is freshly constructed for this event and is never mutated after this point.
+      // Keep the reference directly; JSON string round-tripping only adds CPU/GC pressure.
+      lastScreenSnapshot = snapshot
+    }
+  }
+
+  /**
+   * Preserve a compact causal hint for teaching-time recovery. Accessibility content-change
+   * events describe the new state, not necessarily the physical control that caused it. Keeping
+   * the previous semantic state lets a later planner or human prompt reason over an explicit
+   * before/after diff without storing screenshots or raw touch coordinates.
+   */
+  private fun addTransitionEvidence(action: JSONObject, snapshot: JSONObject) {
+    val previous = lastScreenSnapshot
+    if (previous != null) {
+      action.put("preScreen", compactScreenEvidence(previous))
+      action.put("semanticDiff", semanticDiff(previous, snapshot))
+    }
+    action.put("postScreen", compactScreenEvidence(snapshot))
+  }
+
+  private fun compactScreenEvidence(snapshot: JSONObject): JSONObject {
+    return JSONObject()
+      .put("surface", snapshot.optString("surface"))
+      .put("title", snapshot.optString("title"))
+      .put("visibleTexts", snapshot.optJSONArray("visibleTexts") ?: JSONArray())
+      .put("interactiveElements", snapshot.optJSONArray("interactiveElements") ?: JSONArray())
+  }
+
+  private fun semanticDiff(before: JSONObject, after: JSONObject): JSONObject {
+    val beforeElements = extractInteractiveElements(before)
+    val afterElements = extractInteractiveElements(after)
+    fun key(element: JSONObject): String {
+      val id = element.optString("resourceId")
+      val text = element.optString("text").ifBlank { element.optString("contentDescription") }
+      val bounds = element.optJSONObject("bounds")
+      return listOf(id, text, bounds?.optInt("left", 0), bounds?.optInt("top", 0)).joinToString("|")
+    }
+    val beforeKeys = beforeElements.associateBy(::key)
+    val afterKeys = afterElements.associateBy(::key)
+    val added = JSONArray()
+    val removed = JSONArray()
+    val changedState = JSONArray()
+    for ((elementKey, element) in afterKeys) {
+      if (!beforeKeys.containsKey(elementKey)) added.put(element)
+      else {
+        val old = beforeKeys[elementKey] ?: continue
+        if (old.optBoolean("enabled", true) != element.optBoolean("enabled", true) ||
+          old.optBoolean("checked", false) != element.optBoolean("checked", false) ||
+          old.optBoolean("selected", false) != element.optBoolean("selected", false) ||
+          old.optBoolean("expanded", false) != element.optBoolean("expanded", false)
+        ) changedState.put(element)
+      }
+    }
+    for ((elementKey, element) in beforeKeys) if (!afterKeys.containsKey(elementKey)) removed.put(element)
+    return JSONObject()
+      .put("added", added)
+      .put("removed", removed)
+      .put("changedState", changedState)
+      .put("beforeTitle", before.optString("title"))
+      .put("afterTitle", after.optString("title"))
+  }
+
+  private data class InferenceResult(val score: Double, val reason: String)
+
+  private fun sameNodeInferenceScore(action: JSONObject): InferenceResult? {
+    if (!action.optBoolean("clickable", false)) return null
+    if (!action.optBoolean("enabled", true)) return null
+    val areaFraction = boundsAreaFraction(action.optJSONObject("bounds")) ?: return null
+    // A near-full-screen source is almost certainly a container that changed as a side effect of
+    // something else (e.g. the whole screen re-rendering), not the specific thing touched -
+    // disqualify outright regardless of any other signal.
+    if (areaFraction > 0.35) return null
+    val label = action.optString("text", "").ifBlank { action.optString("contentDescription", "") }
+    val hasResourceId = action.optString("resourceId", "").isNotBlank()
+    val hasLabel = label.isNotBlank() && label.length <= 80
+    // Need at least one stable identifier or this could never be replayed anyway.
+    if (!hasResourceId && !hasLabel) return null
+    var score = 0.45
+    val reasons = mutableListOf("single clickable node changed state")
+    if (hasResourceId) { score += 0.2; reasons.add("stable resourceId") }
+    if (hasLabel) { score += 0.15; reasons.add("meaningful label") }
+    if (areaFraction < 0.05) { score += 0.15; reasons.add("small localized bounds") }
+    val selectorKind = action.optString("selectorKind", "")
+    if (selectorKind.isNotBlank() && selectorKind != "static_text") score += 0.05
+    diffEvidenceForAction(action)?.let { (bonus, reason) ->
+      score += bonus
+      reasons.add(reason)
+    }
+    return InferenceResult(score.coerceAtMost(0.9), reasons.joinToString(", "))
+  }
+
+  /** Connects the before/after diff to the score instead of storing it as documentation only. */
+  private fun diffEvidenceForAction(action: JSONObject): Pair<Double, String>? {
+    val diff = action.optJSONObject("semanticDiff") ?: return null
+    val label = action.optString("text", "").ifBlank { action.optString("contentDescription", "") }.lowercase()
+    val resourceId = action.optString("resourceId", "")
+    if (label.isBlank() && resourceId.isBlank()) return null
+    fun matches(element: JSONObject): Boolean {
+      val candidateLabel = element.optString("text", "").ifBlank { element.optString("contentDescription", "") }.lowercase()
+      return (resourceId.isNotBlank() && resourceId == element.optString("resourceId", "")) ||
+        (label.isNotBlank() && label == candidateLabel)
+    }
+    // changedState is serialized as an array, so inspect it directly rather than routing it
+    // through screen-snapshot extraction.
+    val changedArray = diff.optJSONArray("changedState")
+    val changedMatchCount = changedArray?.let { array -> (0 until array.length()).count { matches(array.optJSONObject(it) ?: JSONObject()) } } ?: 0
+    if (changedMatchCount == 1) return 0.18 to "unique candidate changed state in semantic diff"
+    val addedArray = diff.optJSONArray("added")
+    val addedMatchCount = addedArray?.let { array -> (0 until array.length()).count { matches(array.optJSONObject(it) ?: JSONObject()) } } ?: 0
+    if (addedMatchCount == 1) return 0.08 to "unique candidate appeared in semantic diff"
+    return null
+  }
+
+  private fun navigationInferenceCandidate(snapshot: JSONObject): Pair<JSONObject, InferenceResult>? {
+    if (lastScreenInteractiveCandidates.isEmpty()) return null
+    val newTexts = mutableListOf<String>()
+    snapshot.optJSONArray("visibleTexts")?.let { array -> for (i in 0 until array.length()) newTexts.add(array.optString(i).lowercase()) }
+    val newTitle = snapshot.optString("title", "").lowercase()
+    val matches = lastScreenInteractiveCandidates.filter { candidate ->
+      if (!candidate.optBoolean("clickable", false)) return@filter false
+      val candidateLabel = candidate.optString("text", "").ifBlank { candidate.optString("contentDescription", "") }.lowercase()
+      // Too short/generic ("OK", "Back") to safely correlate - would match unrelated screens.
+      if (candidateLabel.length < 4) return@filter false
+      candidateLabel == newTitle || newTexts.any { it.contains(candidateLabel) || candidateLabel.contains(it) }
+    }
+    // Zero or ambiguous (2+ equally-plausible candidates) - never guess which one caused it.
+    if (matches.size != 1) return null
+    val candidate = matches[0]
+    var score = 0.35
+    val reasons = mutableListOf("single visible candidate's label carried into the new screen")
+    if (candidate.optString("resourceId", "").isNotBlank()) { score += 0.15; reasons.add("stable resourceId") }
+    boundsAreaFraction(candidate.optJSONObject("bounds"))?.let { fraction ->
+      if (fraction < 0.2) { score += 0.1; reasons.add("localized candidate bounds") }
+    }
+    // Navigation correlation is inherently weaker evidence than a same-node state change - never
+    // let it claim as much confidence even with every bonus signal present.
+    return candidate to InferenceResult(score.coerceAtMost(0.75), reasons.joinToString(", "))
+  }
+
+  private fun boundsAreaFraction(bounds: JSONObject?): Double? {
+    if (bounds == null) return null
+    val width = bounds.optInt("width", 0)
+    val height = bounds.optInt("height", 0)
+    if (width <= 0 || height <= 0) return null
+    val display = resources.displayMetrics
+    val screenArea = (display.widthPixels * display.heightPixels).toDouble()
+    if (screenArea <= 0) return null
+    return (width.toDouble() * height.toDouble()) / screenArea
+  }
+
+  private fun extractInteractiveElements(snapshot: JSONObject): List<JSONObject> {
+    val array = snapshot.optJSONArray("interactiveElements") ?: return emptyList()
+    return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+  }
+
   private fun screenSnapshot(root: AccessibilityNodeInfo, surface: String): JSONObject {
     val visibleTexts = JSONArray()
     val interactiveElements = JSONArray()
@@ -1650,5 +1922,8 @@ class LearningWatcherService : AccessibilityService() {
     val QUEUE_LOCK = Any()
     @Volatile private var lastScreenSignature: String = ""
     @Volatile private var lastScreenRecordedAt: Long = 0L
+    @Volatile private var lastScreenInteractiveCandidates: List<JSONObject> = emptyList()
+    @Volatile private var lastScreenSnapshot: JSONObject? = null
+    private const val INFERRED_TAP_CONFIDENCE_THRESHOLD = 0.6
   }
 }

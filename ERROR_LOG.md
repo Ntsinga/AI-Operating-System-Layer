@@ -4,6 +4,182 @@ Chronological incident log for product issues and task-execution failures. Newes
 
 ---
 
+## 2026-07-30 — Teaching sessions silently lost taps under concurrent uploads
+
+- **Area**: `backend/app/learning.py` (`append_action`), `mobile/src/components/LearningModeCard.tsx`.
+- **Symptom**: user reported replay tapping "Experiences" when they were confident they'd taught
+  "Start your Search," insisting the teaching session itself was clear. The saved procedure (8-10
+  steps) looked plausible on its own, so this initially looked like a wrong-element capture bug.
+- **Investigation**: pulled the *raw* teaching-session debug trace (not just the final saved
+  steps) for the session behind procedure 49. It told a completely different story: a 45-second
+  session recorded 60+ taps, cycling chaotically through the same ~6 labels
+  (`Experiences`/`Services`/`Close`/`Location picker...`/`Date Picker...`/`Guest Picker...`), many
+  under 300ms apart - far faster than any real tapping. The reported action count was also stuck
+  at `step=11` across ~45 consecutive appends spanning 19 seconds, meaning the stored array length
+  wasn't growing to match the append calls actually happening.
+- **Root cause**: `LearningModeCard.tsx` polls the native action queue every 800ms and uploads
+  whatever's pending, with no in-flight guard. If a network round-trip to the backend outlasts
+  800ms (common right after Render's free-tier cold start), the next poll tick fires before the
+  previous one finishes - two overlapping uploads for the same session. On the backend,
+  `append_action()`'s `SELECT actions_json` -> mutate -> `UPDATE actions_json` was a plain,
+  unlocked read-modify-write; FastAPI runs sync endpoint handlers in a thread pool, so two
+  concurrent calls could both read the same pre-append state and the later write would silently
+  discard the earlier one. Net effect: dozens of real, correctly-captured taps were quietly lost
+  in the upload pipeline, and whatever randomly survived the race became "the taught procedure" -
+  with no error surfaced anywhere. The final saved steps weren't a wrong capture; they were debris
+  from a lost-update race.
+- **Fix**: `LearningModeCard.tsx` gained a `saveInFlight` ref guard around `saveQueuedActions`
+  (same pattern as the existing `startInFlight`/`stopInFlight`) - an overlapping poll tick now
+  skips rather than races, since the next tick 800ms later picks up whatever accumulated.
+  `learning.py` gained a module-level `_actions_lock = threading.Lock()` wrapping the entire
+  read-modify-write critical section in `append_action`. A single in-process lock is sufficient
+  here specifically because Render runs this backend with `WEB_CONCURRENCY=1` (confirmed from
+  deploy logs) - only one process ever touches this database, so there's no cross-process race to
+  also guard against; a multi-worker deployment would need a DB-level lock instead
+  (`SELECT ... FOR UPDATE` on Postgres - SQLite has no per-row equivalent).
+- **Validation**: added `test_concurrent_append_action_calls_do_not_lose_writes` - 8 threads x 5
+  appends each against the same session, asserting all 40 survive with the exact expected labels
+  (not just a count, since a lock in the wrong place could coincidentally produce the right length
+  via a different bug). Confirmed the test actually catches the regression: temporarily neutering
+  the lock made it fail with only 5/40 appends surviving, matching the real-world severity: then
+  restored the fix and reconfirmed the full suite (54/54) passes. `npx tsc --noEmit` clean.
+- Lessons:
+  - When a "wrong element" complaint comes with "the teaching session was clear," don't trust the
+    final saved artifact as ground truth - pull the *raw* upload trace. A corrupted-in-transit
+    result can look like a plausible, coherent procedure while being nothing of the sort.
+  - A suspiciously *stuck* counter (the same `step=N` reported across dozens of consecutive
+    events) is a strong, specific signal of a lost-update race - much more diagnostic than
+    "the data looks wrong," and worth searching for specifically once "no error, but data doesn't
+    match reality" shows up.
+  - Prove a concurrency fix actually closes the gap by breaking it on purpose first (neuter the
+    lock, watch the new test fail, restore it) - a test that merely passes with the fix in place
+    doesn't rule out testing the wrong thing entirely.
+
+---
+
+## 2026-07-30 — Replay aborted right after a recovery prompt was dismissed
+
+- **Area**: Native replay (`LearningWatcherService.kt`), `RecoveryPromptOverlay.kt`.
+- **Symptom**: user reported "replay opened Airbnb but didn't continue." Debug trace for
+  procedure 48 showed: step 1's tap went through `attemptBoundedRecovery` -> `ask_user`, resolved
+  as `recovery_ask_user_cancelled_or_timed_out`, then the very next step (2) immediately failed
+  with `target_surface_lost_abort`, ending the replay.
+- **Root cause**: `RecoveryPromptOverlay.dismiss()` removed the overlay window by posting to the
+  main thread (`Handler(Looper.getMainLooper()).post { windowManager.removeView(view) }`) and
+  returned immediately, without waiting for that post to actually run. The calling
+  `askChoiceOrText`/`askConfirm` (running on the background replay thread) returned control to
+  `replay()`'s main loop right away, which could then check `isTargetSurfaceActive()` for the
+  *next* step before the overlay had actually been removed from the window manager. While our own
+  `TYPE_ACCESSIBILITY_OVERLAY` window was still topmost, `rootInActiveWindow` reported
+  `com.aioperatingsystem` instead of the target app, and the unconditional
+  `currentRootSurface() == surface` check in `isTargetSurfaceActive()` treated that as "target
+  lost," aborting every remaining step.
+- **Fix**: `dismiss()` now blocks on a `CountDownLatch` until the posted `removeView()` actually
+  runs (2s cap), plus a 200ms settle delay - `WindowManagerService`'s own focus recalculation can
+  lag slightly behind `removeView()` returning. Also hardened `isTargetSurfaceActive()` itself as
+  defense in depth: a transient system surface (launcher/systemui/keyboard, reusing
+  `isTransientNavigationSurface` from the recording-side auto-stop fix earlier today) or briefly
+  seeing our own package no longer counts as "target lost" - only a real, different app does.
+- **Separately confirmed not a bug**: procedure 48 ("Book 2")'s first step (`tap "Clear all"`)
+  is a filter chip that only exists on a search-results/filter screen, not Airbnb's default
+  Explore/Homes landing screen replay actually opens to. Teaching most likely started after the
+  user had already manually navigated into that screen, so the procedure is missing the leading
+  steps to get there from a fresh launch - a pre-existing "replay always launches fresh, procedure
+  assumes wherever teaching started" limitation, unrelated to today's fixes. Re-teaching this
+  procedure starting from Airbnb's actual launch screen should produce a fully replayable one.
+- **Validation**: Kotlin compiles clean. On-device re-test of a full replay pending.
+
+---
+
+## 2026-07-30 — Compose-style teaching sessions capture transitions but zero taps
+
+- **Area**: Android Accessibility / Learning capture
+- **Symptoms**: Four real Airbnb teaching sessions, including deliberate picker and search
+  interactions, produced approximately 395 `screen_transition` events and zero `tap` events.
+  Sessions stopped cleanly when the user returned to AI-OS.
+- **Current assessment**: The recorder depends on `TYPE_VIEW_CLICKED` for physical taps. Some
+  Compose-based or custom-semantic UIs appear to expose the resulting content change without a
+  corresponding clicked event. This is not yet proven to be Airbnb-only or Compose-only and must
+  be validated against event source nodes, pre/post hierarchy diffs, and Android versions.
+- **Safety constraint**: Do not treat every content change as a tap and do not inject raw touch
+  interception into teaching; ambiguous inferred taps could corrupt learned procedures.
+- **Next investigation**: Add bounded, explicitly `inferred` candidate detection using a recent
+  content-change window, source-node semantics/bounds, and before/after hierarchy evidence. Keep
+  deterministic events authoritative, require confidence/uniqueness, and reject ambiguous cases.
+- **Confirmed root cause (web research)**: Airbnb's own engineering blog confirms their Android
+  app is substantially built on Jetpack Compose (their "Trio" screen-architecture framework, in
+  production since ~2020-2021). Compose's `clickable` modifier does not reliably synthesize
+  `AccessibilityEvent.TYPE_VIEW_CLICKED` for a real physical touch the way a classic `View` does -
+  the semantics/click-action integration is built primarily for an accessibility service
+  *performing* `ACTION_CLICK`, not for observing one. `AccessibilityService.onMotionEvent()` would
+  give raw touch data, but it's Android 14+ only and (per its own docs) *withholds* those motion
+  events from the rest of the system - i.e. using it would break the target app's ability to
+  receive the user's real touches while teaching. Ruled out; not attempted.
+- **Implemented (2026-07-30, same day)**: bounded, typed "inferred tap" pipeline in
+  `LearningWatcherService.kt` (`applyInferredTapIfConfident`), reusing per-event capture data that
+  was already being collected but not used for this: `clickable`/`enabled` state, resourceId,
+  content description, bounds, selector role, and each screen's full `interactiveElements` list.
+  Two cases, both reject-on-ambiguity rather than guess:
+  - **Same-node state change**: the content-changed event's own source node is itself small
+    (<35% of screen area disqualifies outright), clickable, enabled, and has a stable resourceId
+    or meaningful label. Base score 0.45, +0.2 resourceId, +0.15 label, +0.15 small/localized
+    bounds, +0.05 non-generic selector role; capped at 0.9.
+  - **Navigation correlation**: the event's source is the new screen's root (not useful on its
+    own), but exactly one clickable candidate from the *previous* screen's captured interactive
+    elements has a label that carried over into the new screen's title/visible text. Zero or 2+
+    matching candidates = ambiguous = rejected, never guessed. Base score 0.35, capped at 0.75
+    (weaker evidence than a same-node match, so it can never claim as much confidence).
+  - Threshold to accept either case: confidence >= 0.6. Below that, or disqualified outright,
+    the event stays an ordinary `screen_transition` - completely unchanged behavior.
+  - Accepted inferred taps are tagged `inferred: true`, `confidence: <score>`,
+    `inferenceReason: "<human-readable>"` and otherwise populate the exact same
+    resourceId/text/contentDescription fields a real tap would, so replay works identically either
+    way - replay only ever reads those matching fields, never the inferred/confidence tags.
+  - **Persistence gap caught before it shipped**: `backend/app/learning.py`'s `append_action()`
+    used a field allowlist that would have silently dropped `inferred`/`confidence`/
+    `inferenceReason` before ever saving them, defeating the "auditable" requirement even though
+    capture correctly tagged them. Fixed by adding the three fields to the allowlist.
+- **Replay-side gate (added same day, before first test)**: the user pushed back on "will replay
+  actually work" - correctly pointing out that structural compatibility isn't the same question
+  as *safety*. An inferred tap is a confident guess, not ground truth; replaying one unconditionally
+  would let a wrong guess execute as if it were a real captured click, with no error at all (the
+  wrong-but-real element would still be found and tapped "successfully"). Added
+  `confirmInferredTapBeforeExecuting` in `LearningWatcherService.kt`: before executing any tap step
+  where `inferred == true` and `inferenceConfirmed != true`, blocks on a new
+  `RecoveryPromptOverlay.askConfirm` (pure yes/no, no candidate list/text field) showing the
+  target label, confidence %, and inference reason. Confirming persists `inferenceConfirmed: true`
+  via the existing `correct-step` endpoint (learn-forward - future replays of that step skip the
+  prompt); declining skips the step entirely rather than tapping anything. This closes the loop the
+  user's original spec called a hard requirement ("replay should apply stricter matching or
+  confirmation... never silently treated as equivalent to real click events"), not an optional
+  deferred item. Required also adding `inferred`/`confidence`/`inferenceReason`/`inferenceConfirmed`
+  to `LearningWatcherModule.kt`'s JS->native replay bridge allowlist - a *third* allowlist (capture
+  screen_transition -> action fields; backend `append_action`; now the replay bridge) that would
+  otherwise have silently dropped these fields exactly like the persistence-layer gap below.
+- **Explicitly deferred** (per the agreed phased plan, not forgotten): a live "ask the user"
+  confirmation UI during *teaching* for ambiguous inferred candidates (distinct from the
+  replay-time confirm gate above), and a "visible inferred step" indicator in
+  `LearningModeCard.tsx`'s live recording counter. Both are natural follow-ups once real-world
+  Airbnb re-tests show whether the same-node/navigation cases actually fire in practice.
+- **Validation**: `backend/tests/test_procedural_memory_and_learning.py` gained
+  `test_learning_session_preserves_inferred_tap_fields`, confirming inferred/confidence/
+  inferenceReason survive `append_action` -> `complete_session` -> saved procedure steps. Full
+  backend suite 53/53 passing. Native side compiles clean. On-device re-test against Airbnb still
+  pending as of this entry.
+- Lessons:
+  - Effectiveness claims need real math, not a plausible-sounding idea. Before proposing the
+    "infer a tap when the changed node is itself clickable" heuristic, actually counting how often
+    that pattern occurred in the real captured data (2 times out of 400+ events) would have caught
+    that it was too weak to be useful on its own - the fuller pipeline (confidence scoring,
+    uniqueness requirement, navigation-case correlation, explicit rejection) is what the user's
+    counter-proposal correctly demanded instead of a single boolean heuristic.
+  - A new persisted field is only as safe as every allowlist it has to pass through. Adding
+    `inferred`/`confidence`/`inferenceReason` at the capture site was necessary but not
+    sufficient - the backend's own field allowlist (a separate, easy-to-forget checkpoint) needed
+    the same update, or the data would have silently vanished by the time it reached storage.
+
+---
+
 ## 2026-07-19 — Android Gradle build fails: "Unable to establish loopback connection"
 
 - **Area**: Build / Tooling
@@ -881,3 +1057,19 @@ install-time validation requirement rather than something this Windows workspace
 - Lessons:
   - A "persist this correction" code path added to fix one bug (recovery not self-healing) can silently reintroduce a *different*, previously-solved problem (runtime values leaking into permanent memory) if it doesn't know about a policy that already existed elsewhere in the system (the planner prompt). When adding persistence to any previously-ephemeral operation, explicitly check what else already assumed that operation was ephemeral.
   - "It returned 200" is not the same claim as "the new code is live" - for any zero-downtime-deployed service, verify a deploy by a behavior the new code specifically produces, not by the service merely responding.
+
+## 2026-07-30 — Teaching evidence handoff and Android install limitation
+
+- **Implementation update**: Learning transitions now carry compact `preScreen`, `postScreen`,
+  and `semanticDiff` evidence through the native queue and backend persistence. This preserves
+  semantic before/after context for a future bounded teaching retry or planner decision without
+  storing screenshots or raw touch coordinates.
+- **Validation**: Backend unittest coverage passed 9/9 for the affected learning tests. Android
+  `:app:installDebug` first timed out after 124 seconds without output; the longer retry reached
+  Gradle but failed at installation because no connected devices were available. The updated APK
+  has not been claimed as installed.
+
+- **Follow-up**: `semanticDiff.changedState` and unique `added` matches now contribute directly to
+  same-node inferred-tap confidence; the diff is no longer documentation-only. The previous-screen
+  snapshot is retained by reference because the event snapshot is not mutated afterward. Payload
+  size remains unchanged pending real-session compaction measurements.

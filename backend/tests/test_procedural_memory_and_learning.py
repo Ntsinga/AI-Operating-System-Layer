@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -42,6 +43,63 @@ class ProceduralMemoryAndLearningTests(unittest.TestCase):
         self.assertTrue(result["procedureSaved"])
         self.assertEqual(result["actions"][0], {"action": "tap", "text": "Book"})
         self.assertEqual(procedural_memory.list_procedures()[0]["state"], "draft")
+
+    def test_learning_session_preserves_inferred_tap_fields(self):
+        # ERROR_LOG.md 2026-07-30: an inferred tap (no authoritative TYPE_VIEW_CLICKED event -
+        # e.g. Compose-based apps like Airbnb) must stay distinguishable from a real click all the
+        # way through persistence, not just at capture time - otherwise "typed and auditable"
+        # is meaningless. A field allowlist here previously would have silently dropped these.
+        session = learning.start_session("teach airbnb filter", "com.airbnb.android")
+        learning.append_action(session["sessionId"], {
+            "action": "tap",
+            "text": "Services",
+            "resourceId": "com.airbnb.android:id/filter_chip",
+            "inferred": True,
+            "confidence": 0.8,
+            "inferenceReason": "single clickable node changed state, stable resourceId",
+            "preScreen": {"title": "Home", "interactiveElements": [{"text": "Start Search"}]},
+            "postScreen": {"title": "Search", "interactiveElements": [{"text": "Where to?"}]},
+            "semanticDiff": {"added": [{"text": "Where to?"}], "removed": [], "changedState": []},
+        })
+        result = learning.complete_session(session["sessionId"])
+        saved = result["actions"][0]
+        self.assertTrue(saved["inferred"])
+        self.assertEqual(saved["confidence"], 0.8)
+        self.assertEqual(saved["inferenceReason"], "single clickable node changed state, stable resourceId")
+        self.assertEqual(saved["preScreen"]["title"], "Home")
+        self.assertEqual(saved["postScreen"]["title"], "Search")
+        self.assertEqual(saved["semanticDiff"]["added"][0]["text"], "Where to?")
+
+    def test_concurrent_append_action_calls_do_not_lose_writes(self):
+        # ERROR_LOG.md 2026-07-30: FastAPI runs sync endpoint handlers in a thread pool, so two
+        # overlapping requests for the same session (e.g. a client poll tick whose network
+        # round-trip outlasts its own interval) could previously race on append_action's plain
+        # read-then-write, with the later write silently clobbering the earlier one - a real
+        # 45s Airbnb teach session recorded 60+ real taps but only 8 survived. _actions_lock
+        # exists specifically to make this impossible; prove it under real concurrent threads
+        # rather than trusting the lock is there and correctly placed.
+        session = learning.start_session("teach concurrent taps", "com.example.app")
+        session_id = session["sessionId"]
+        thread_count = 8
+        appends_per_thread = 5  # well under MAX_ACTIONS (80) - compaction must not be a factor here
+
+        def hammer(thread_index: int) -> None:
+            for i in range(appends_per_thread):
+                learning.append_action(session_id, {"action": "tap", "text": f"t{thread_index}-{i}"})
+
+        threads = [threading.Thread(target=hammer, args=(index,)) for index in range(thread_count)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        result = learning.complete_session(session_id)
+        self.assertEqual(len(result["actions"]), thread_count * appends_per_thread)
+        # Every single append must have survived - not just the count, since a lock placed in
+        # the wrong spot could still coincidentally produce the right length via a different bug.
+        recorded_labels = {action["text"] for action in result["actions"]}
+        expected_labels = {f"t{i}-{j}" for i in range(thread_count) for j in range(appends_per_thread)}
+        self.assertEqual(recorded_labels, expected_labels)
 
     def test_debug_events_are_persisted_and_sanitized(self):
         result = debug_events.record_events([

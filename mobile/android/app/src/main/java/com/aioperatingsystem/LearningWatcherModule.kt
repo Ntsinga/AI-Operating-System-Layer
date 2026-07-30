@@ -107,6 +107,10 @@ class LearningWatcherModule(private val context: ReactApplicationContext) : Reac
         "parentSelectorKind",
         "parentText",
         "synthetic",
+        "inferred",
+        "confidence",
+        "inferenceReason",
+        "inferenceConfirmed",
       )) {
         if (item.hasKey(key) && !item.isNull(key)) map[key] = dynamicToString(item.getDynamic(key))
       }

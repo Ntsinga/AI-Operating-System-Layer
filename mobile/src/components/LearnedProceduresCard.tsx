@@ -12,9 +12,19 @@ const PAGE_SIZE = 10;
 function hasStableReplaySelector(args: Record<string, unknown>) {
   const resourceId = String(args.resourceId ?? '');
   const contentDescription = String(args.contentDescription ?? '');
+  if (resourceId || contentDescription) return true;
   const text = String(args.text ?? '');
+  // A tap's `text` is a static UI label (native replay can match on it directly via
+  // findNode/findSemanticFallback) - a non-blank label alone is a legitimate, stable selector
+  // even when there's no resourceId/contentDescription to fall back to. `fieldKey` commonly
+  // just mirrors that same label in this case, which is fine for a tap.
+  if (String(args.action ?? '') === 'tap') return Boolean(text.trim());
+  // text_input is different: fieldKey merely mirroring the CURRENTLY TYPED value is exactly the
+  // malformed incremental-delta pattern this guard exists to catch (focus("W"), focus("Wa"), ... -
+  // see ERROR_LOG.md 2026-07-28) - an ever-changing value, not a stable field identifier. So for
+  // text_input specifically, fieldKey must be something other than the just-typed text.
   const fieldKey = String(args.fieldKey ?? '');
-  return Boolean(resourceId || contentDescription || (fieldKey && fieldKey !== text));
+  return Boolean(fieldKey && fieldKey !== text);
 }
 
 function hasRealReplayAction(procedure: Procedure) {

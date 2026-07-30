@@ -7,6 +7,7 @@ development scaffold for the Android AccessibilityService watcher that will feed
 import json
 import logging
 import sqlite3
+import threading
 from contextlib import contextmanager
 import uuid
 from pathlib import Path
@@ -18,6 +19,17 @@ DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.learning")
 MAX_ACTIONS_JSON_CHARS = 50000
 MAX_ACTIONS = 80
+
+# append_action's SELECT-then-UPDATE is a classic read-modify-write race: FastAPI runs sync
+# endpoint handlers in a thread pool, so two overlapping requests for the SAME session (e.g. a
+# client-side poll tick whose network round-trip outlasts its own interval, firing again before
+# the first finishes) can both read the same actions_json, append independently, and the later
+# write silently clobbers the earlier one - no error, just quietly lost taps. Neither SQLite nor
+# a plain Postgres connection here prevents this on their own (see ERROR_LOG.md 2026-07-30: a 45s
+# teach session recorded 60+ real taps but only 8 survived to the saved procedure). A single
+# in-process lock is sufficient because Render runs this backend with WEB_CONCURRENCY=1 - only
+# one process ever touches this database, so there is no cross-process race to also guard against.
+_actions_lock = threading.Lock()
 
 
 def _record_learning_event(**kwargs: Any) -> None:
@@ -102,18 +114,22 @@ def start_session(intent: str, app_package: str | None = None) -> dict[str, Any]
 
 
 def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
-    with _connection() as connection:
-        row = execute(connection, "SELECT actions_json, status FROM learning_sessions WHERE id = ?", (session_id,)).fetchone()
-        if not row:
-            raise KeyError("Learning session was not found.")
-        if row[1] != "recording":
-            raise ValueError("Learning session is no longer recording.")
-        actions = json.loads(row[0])
-        # Keep semantic selectors and omit screenshots, passwords, and arbitrary payloads.
-        safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "resourceIdOccurrence", "fieldKey", "action", "value", "screenTitle", "screen", "clickable", "editable", "scrollable", "enabled", "selectorKind", "nodeClass", "parentClass", "parentSelectorKind", "parentText", "synthetic") if key in action}
-        actions.append(safe)
-        actions = _compact_actions(actions)
-        execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions, default=str), session_id))
+    # See _actions_lock's module-level comment: this read-modify-write must be atomic across
+    # concurrent requests for the same (or any) session, or a later write can silently discard an
+    # earlier one.
+    with _actions_lock:
+        with _connection() as connection:
+            row = execute(connection, "SELECT actions_json, status FROM learning_sessions WHERE id = ?", (session_id,)).fetchone()
+            if not row:
+                raise KeyError("Learning session was not found.")
+            if row[1] != "recording":
+                raise ValueError("Learning session is no longer recording.")
+            actions = json.loads(row[0])
+            # Keep semantic selectors and omit screenshots, passwords, and arbitrary payloads.
+            safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "resourceIdOccurrence", "fieldKey", "action", "value", "screenTitle", "screen", "preScreen", "postScreen", "semanticDiff", "clickable", "editable", "scrollable", "enabled", "selectorKind", "nodeClass", "parentClass", "parentSelectorKind", "parentText", "synthetic", "inferred", "confidence", "inferenceReason") if key in action}
+            actions.append(safe)
+            actions = _compact_actions(actions)
+            execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions, default=str), session_id))
     logger.info("learning_action_appended session=%s action_count=%d action=%s", session_id, len(actions), safe.get("action", ""))
     _record_learning_event(
         trace_id=session_id,
