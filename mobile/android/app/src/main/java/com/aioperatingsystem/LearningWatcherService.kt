@@ -69,10 +69,19 @@ class LearningWatcherService : AccessibilityService() {
       // with no real app-switch or typing involved. See ERROR_LOG.md 2026-07-30 (Book 9/10
       // investigation - every recording_auto_stopped event that day had
       // activeRootSurface==eventSurface==our own package, never a genuine third-party app).
-      if (targetWasSeen && targetSurface.isNotBlank() && activeRootPackage.isNotBlank() && activeRootPackage != targetSurface &&
-        surface != targetSurface && activeRootPackage != packageName && surface != packageName &&
-        !isTransientNavigationSurface(activeRootPackage) && !isTransientNavigationSurface(surface)
-      ) {
+      val wouldFlagAsExited = targetWasSeen && targetSurface.isNotBlank() && activeRootPackage.isNotBlank() && activeRootPackage != targetSurface &&
+        surface != targetSurface && !isTransientNavigationSurface(activeRootPackage) && !isTransientNavigationSurface(surface)
+      if (wouldFlagAsExited && (activeRootPackage == packageName || surface == packageName)) {
+        // Confirms the self-app exemption actually fired, rather than inferring it from the
+        // absence of recording_auto_stopped - see ERROR_LOG.md 2026-07-30. Doesn't return; the
+        // event still falls through the normal skip/queue logic below like any other event.
+        Log.i("AIOS.Learning", JSONObject()
+          .put("event", "auto_stop_exempted_self_app")
+          .put("eventSurface", surface)
+          .put("activeRootSurface", activeRootPackage)
+          .put("targetSurface", targetSurface)
+          .toString())
+      } else if (wouldFlagAsExited) {
         prefs.edit().putBoolean(RECORDING, false).putString(TARGET_SURFACE, "").apply()
         Log.i("AIOS.Learning", JSONObject()
           .put("event", "recording_auto_stopped")
@@ -120,19 +129,21 @@ class LearningWatcherService : AccessibilityService() {
         activeRootPackage != targetSurface &&
         activeRootPackage != packageName
       ) {
-        Log.i("AIOS.Learning", JSONObject()
-          .put("event", "recording_event_skipped")
-          .put("reason", "target_not_frontmost")
-          .put("eventSurface", surface)
-          .put("activeRootSurface", activeRootPackage)
-          .put("targetSurface", targetSurface)
-          .put("action", actionType)
-          .toString()
-        )
+        logThrottledSkip("target_not_frontmost", surface, activeRootPackage, targetSurface, actionType)
         return
       }
+      // Recorded early and deliberately BEFORE any large field (screen/preScreen/postScreen can
+      // each run several KB) - a single Log.i call is truncated by Android at ~4KB, so any field
+      // added after a large one is silently lost from logcat even though it's still present in
+      // the actual JSON sent to the backend. Putting small, high-value fields first means logcat
+      // debugging doesn't require reconstructing truncated JSON by hand. Also gives every action a
+      // real on-device timestamp - debugging previously had to approximate event timing from the
+      // backend's action_appended debug_events, which lag the true device-side event by however
+      // long the 800ms poll batching + network round-trip took, making burst/storm timing analysis
+      // imprecise. See ERROR_LOG.md 2026-07-30.
       val action = JSONObject()
         .put("schemaVersion", 2)
+        .put("timestamp", System.currentTimeMillis())
         .put("surface", surface)
         .put("role", event.className?.toString() ?: "")
         .put("action", actionType)
@@ -1606,6 +1617,31 @@ class LearningWatcherService : AccessibilityService() {
   // Broader than isKeyboardOrSystemUi (used only by the recording auto-stop guard above): also
   // excludes launchers, since gesture-nav animations routinely surface the launcher for a frame
   // or two without the user actually leaving the app they're teaching.
+  // target_not_frontmost can fire hundreds of times per second during a real rootInActiveWindow
+  // glimpse (launcher/gesture-nav/self-app), per ERROR_LOG.md 2026-07-30 - logging every single one
+  // both floods logcat and, worse, can push genuinely useful earlier history out of the log ring
+  // buffer entirely (this happened during that day's own investigation). Log the first occurrence
+  // of a burst immediately (full detail, actionable in real time), then only a periodic progress
+  // marker while it continues, instead of every event.
+  private fun logThrottledSkip(reason: String, eventSurface: String, activeRootSurface: String, targetSurface: String, actionType: String) {
+    val now = System.currentTimeMillis()
+    val isNewEpisode = now - lastSkipEventAt > SKIP_EPISODE_GAP_MS
+    skipStreakCount = if (isNewEpisode) 1 else skipStreakCount + 1
+    lastSkipEventAt = now
+    if (isNewEpisode || skipStreakCount % SKIP_LOG_EVERY == 0) {
+      Log.i("AIOS.Learning", JSONObject()
+        .put("event", "recording_event_skipped")
+        .put("reason", reason)
+        .put("eventSurface", eventSurface)
+        .put("activeRootSurface", activeRootSurface)
+        .put("targetSurface", targetSurface)
+        .put("action", actionType)
+        .put("streakCount", skipStreakCount)
+        .toString()
+      )
+    }
+  }
+
   private fun isTransientNavigationSurface(packageName: String): Boolean {
     val lower = packageName.lowercase()
     return isKeyboardOrSystemUi(packageName) || lower.contains("launcher")
@@ -1766,6 +1802,19 @@ class LearningWatcherService : AccessibilityService() {
       it.optString("text", "").takeIf { text -> text.isNotBlank() }?.let { text -> action.put("text", text) }
       it.optString("contentDescription", "").takeIf { desc -> desc.isNotBlank() }?.let { desc -> action.put("contentDescription", desc) }
     }
+    // Small, guaranteed-not-truncated companion line for the acceptance itself - the full action
+    // object logged elsewhere can lose these exact fields to Android's ~4KB per-line log
+    // truncation once screen/preScreen/postScreen are attached (they're added to `action` AFTER
+    // this point in the pipeline). Without this, confirming "did Case A/B/C accept anything, and
+    // with what confidence/reason" required cross-referencing the backend's action_appended trace
+    // instead of reading logcat directly.
+    Log.i("AIOS.Learning", JSONObject()
+      .put("event", "inferred_tap_accepted")
+      .put("text", action.optString("text"))
+      .put("resourceId", action.optString("resourceId"))
+      .put("confidence", score)
+      .put("reason", reason)
+      .toString())
   }
 
   private fun applyInferredTapIfConfident(action: JSONObject, snapshot: JSONObject) {
@@ -2113,5 +2162,9 @@ class LearningWatcherService : AccessibilityService() {
     @Volatile private var inferredTapStormStreak: Int = 0
     private const val INFERRED_TAP_STORM_EPISODE_GAP_MS = 1000L
     private const val INFERRED_TAP_STORM_ALLOWED_STREAK = 1
+    @Volatile private var lastSkipEventAt: Long = 0L
+    @Volatile private var skipStreakCount: Int = 0
+    private const val SKIP_EPISODE_GAP_MS = 500L
+    private const val SKIP_LOG_EVERY = 100
   }
 }

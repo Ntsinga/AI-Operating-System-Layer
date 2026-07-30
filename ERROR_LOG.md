@@ -1426,3 +1426,94 @@ directly).
   - A fix that's written, tested, and reported as "not yet deployed" doesn't stay theoretical -
     it keeps actively corrupting every subsequent production session until it's actually pushed.
     Treat "confirmed root cause, fix ready, not deployed" as an open incident, not a closed one.
+
+## 2026-07-30 (same day, follow-up 4) — An early "Finish teaching" tap permanently orphaned the session, silently discarding everything after it
+
+- **Symptom**: after all four fixes above were deployed (auto-stop storms confirmed gone via fresh
+  logcat), user reported the app "failing to store new procedures" while teaching SafeBoda
+  ("Ride 34").
+- **Investigation**: queried the two most recent SafeBoda `learning_sessions` directly. Both were
+  stuck in `recording` status - one with 13 real actions captured, one with 34 - despite the
+  underlying recording clearly having worked cleanly (their `debug_events` traces show a normal,
+  monotonically increasing `action_appended` sequence with real taps/scrolls/text_input all the
+  way through, no auto-stop, no eviction). Both traces show a `session_error` ("At least one
+  semantic action is required.") firing very early - after only 1-2 real actions - then MORE real
+  actions kept appending to the same session_id for another 10-30 seconds afterward, with no
+  further completion attempt ever recorded.
+- **Root cause**: `LearningModeCard.tsx`'s `stop()` (the only caller of `completeLearningSession`)
+  unconditionally disables native recording and resets `sessionId`/`activeSessionId.current` to
+  null in its catch block, regardless of *why* completion failed. `complete_session` on the backend
+  correctly rejects with 409 when a session hasn't captured anything actionable yet - a completely
+  recoverable state (the user just isn't done). But the client treated that identically to a real
+  failure: recording gets disabled and the UI reverts to the "Start teaching" form, which has no
+  "Finish teaching" button since that only renders when `sessionId` is set. The session is left
+  permanently orphaned in `recording` status with no way to reach it from the UI again, while
+  anything the user does afterward in the target app is never captured (recording really was
+  disabled). The old code's own comment even documented the wrong assumption explicitly:
+  "Recording was already disabled above... tapping Finish teaching again would just resubmit the
+  identical request and fail identically forever" - true only because the code itself disabled
+  recording first, not an inherent property of the situation.
+- **Fix**: `stop()`'s catch block now distinguishes this specific case (message matching
+  `/at least one semantic action|no actionable taps/i`) from a genuine failure. On that path it
+  re-enables recording (`setLearningRecording(true, selectedApp.packageName)`), restarts the poll
+  timer, and shows "keep performing the task, then try Finish teaching again" instead of resetting
+  `sessionId` - the session stays alive and reachable. Every other failure (network error, session
+  not found, etc.) keeps the original reset-to-start-screen behavior, since those genuinely aren't
+  recoverable from where the user is.
+- **Validation**: `npx tsc --noEmit` clean. Rebuilt and installed on device. On-device re-test of
+  the exact recovery path (tap Finish too early, confirm recording resumes and a later Finish
+  succeeds) still pending.
+- Lessons:
+  - A caught error's *category* matters, not just whether it was caught. Collapsing "the session
+    isn't done yet" (recoverable, expected, no data lost) and "the session is broken" (unrecoverable)
+    into the same catch-all handler turned an ordinary early-tap mis-click into permanent data loss
+    for everything captured afterward, not just the tap itself.
+  - The four upstream fixes today (focus storm, inference storm, char budget, self-triggered
+    auto-stop) were all real and are all still correct - this was a fifth, independent bug that
+    just happened to surface right after, since it took a clean recording session (no longer killed
+    early by the auto-stop bug) to run long enough for an early "Finish" mis-tap's consequences to
+    become visible as "30 real actions never saved" instead of being masked by the auto-stop
+    truncating the session anyway.
+
+## 2026-07-30 (same day, follow-up 5) — Debugging instrumentation gaps found during the day's own investigation
+
+While root-causing the five bugs above, several real gaps in the debugging data itself slowed the
+investigation down. Fixed proactively rather than waiting for the next incident to hit them again:
+
+- **Logcat truncation was hiding exactly the fields needed most.** Android truncates a single
+  `Log.i` call at ~4KB. Once `screen`/`preScreen`/`postScreen` (each several KB) got embedded in an
+  action, fields added *after* them - `inferred`/`confidence`/`inferenceReason` - were silently cut
+  from the raw log even though still present in the JSON actually sent to the backend, forcing
+  reconstruction via `debug_events` queries instead of reading logcat directly. Fixed two ways:
+  `timestamp` (real on-device `System.currentTimeMillis()`, not the backend's batched upload time)
+  is now the second field written on every action, guaranteeing it survives truncation; and both
+  `applyInferredTapIfConfident`'s acceptance path (new `inferred_tap_accepted` event) and its
+  existing suppression path now log a small, complete, un-truncatable summary line independent of
+  the full action object.
+- **The backend's `action_appended` debug event omitted `inferred`/`confidence`/`inferenceReason`/
+  `synthetic`.** Confirming why a specific step was captured required a separate direct query
+  against the session's current `actions_json` - which only reflects the *final*, possibly
+  compacted state, not the full history. `debug_events` is append-only, so adding these fields to
+  its `details` (`backend/app/learning.py`) gives a complete, immutable trail even for steps a later
+  compaction evicts.
+- **The `target_not_frontmost` skip path could log 400+ near-duplicate lines for a single
+  multi-second glitch**, both flooding logcat and (confirmed happening during this very
+  investigation) pushing genuinely useful earlier history out of the log ring buffer entirely. Now
+  throttled (`logThrottledSkip`): first occurrence of a burst logs immediately in full, then only a
+  periodic progress marker every 100 while it continues.
+- **The self-app auto-stop exemption (follow-up 3's fix) had no positive confirmation signal** -
+  the only way to verify it was firing was inferring it from the *absence* of a
+  `recording_auto_stopped` event. Added `auto_stop_exempted_self_app`, logged exactly when that
+  exemption is what prevented a stop.
+- **The orphaned-session recovery path (follow-up 4's fix) reused the generic `session_error`
+  event**, making it indistinguishable from a real failure without string-matching the reason text.
+  Split into a distinct `completion_deferred_not_enough_captured` event (level `warn`, not `error`)
+  so future analysis can directly count/filter "recovered from an early Finish tap" separately from
+  genuine failures.
+- **Validation**: `:app:compileDebugKotlin` clean, `npx tsc --noEmit` clean, backend suite 54/54.
+  Rebuilt and installed on device; backend changes pending deploy alongside this entry.
+- Lesson: debugging instrumentation itself accumulates gaps the same way application code does -
+  the ~4KB logcat truncation and the missing `debug_events` fields had both been silently limiting
+  every investigation this session, not just today's; they just happened to matter enough today to
+  notice. Worth periodically asking "what would make the *next* investigation faster" as its own
+  task, not only reactively while already blocked mid-investigation.

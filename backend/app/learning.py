@@ -135,7 +135,7 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("Learning session is no longer recording.")
             actions = json.loads(row[0])
             # Keep semantic selectors and omit screenshots, passwords, and arbitrary payloads.
-            safe = {key: action.get(key) for key in ("schemaVersion", "surface", "role", "text", "contentDescription", "resourceId", "resourceIdOccurrence", "fieldKey", "action", "value", "screenTitle", "screen", "preScreen", "postScreen", "semanticDiff", "clickable", "editable", "scrollable", "enabled", "selectorKind", "nodeClass", "parentClass", "parentSelectorKind", "parentText", "synthetic", "inferred", "confidence", "inferenceReason") if key in action}
+            safe = {key: action.get(key) for key in ("schemaVersion", "timestamp", "surface", "role", "text", "contentDescription", "resourceId", "resourceIdOccurrence", "fieldKey", "action", "value", "screenTitle", "screen", "preScreen", "postScreen", "semanticDiff", "clickable", "editable", "scrollable", "enabled", "selectorKind", "nodeClass", "parentClass", "parentSelectorKind", "parentText", "synthetic", "inferred", "confidence", "inferenceReason") if key in action}
             actions.append(safe)
             actions = _compact_actions(actions)
             execute(connection, "UPDATE learning_sessions SET actions_json = ? WHERE id = ?", (json.dumps(actions, default=str), session_id))
@@ -148,6 +148,7 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
         step=len(actions),
         details={
             "actionCount": len(actions),
+            "clientTimestamp": safe.get("timestamp"),
             "action": safe.get("action"),
             "surface": safe.get("surface"),
             "role": safe.get("role"),
@@ -158,6 +159,10 @@ def append_action(session_id: str, action: dict[str, Any]) -> dict[str, Any]:
             "screenTitle": safe.get("screenTitle"),
             "clickable": safe.get("clickable"),
             "enabled": safe.get("enabled"),
+            "synthetic": safe.get("synthetic"),
+            "inferred": safe.get("inferred"),
+            "confidence": safe.get("confidence"),
+            "inferenceReason": safe.get("inferenceReason"),
             "screen": safe.get("screen"),
         },
     )

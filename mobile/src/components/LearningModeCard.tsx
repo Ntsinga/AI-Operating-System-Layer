@@ -116,24 +116,48 @@ export function LearningModeCard() {
       setSessionId(null);
       if (drained === 0 && result.actions.length === 0) setMessage('No actions were captured. Enable Accessibility and make sure you perform the task inside the selected app.');
     } catch (error) {
-      await setLearningRecording(false, undefined).catch(() => undefined);
+      const message = error instanceof Error ? error.message : 'Could not finish teaching.';
+      // complete_session rejects with exactly these two messages when the session is real and
+      // still recording but hasn't captured anything actionable yet - not a genuine failure, just
+      // "you tapped Finish before doing anything". The old behavior disabled recording and reset
+      // sessionId/activeSessionId unconditionally here, which orphaned the session: the UI reverts
+      // to the "Start teaching" form (no "Finish teaching" button exists without a live sessionId
+      // to tap again), yet the backend session is still sitting in "recording" status forever -
+      // any further real interaction the user performs in the target app is never captured because
+      // recording really was disabled above. See ERROR_LOG.md 2026-07-30 (SafeBoda "Ride 34" -
+      // Finish tapped ~20s in with only 2 actions captured, orphaning 30+ subsequent real actions).
+      const notEnoughYet = /at least one semantic action|no actionable taps/i.test(message);
       if (finishingSessionId) {
+        // Distinct event name from a genuine session_error - lets a debug_events query directly
+        // count/filter "recovered from an early Finish tap" separately from real failures, instead
+        // of string-matching the reason field after the fact.
         await recordDebugEvents([{
           traceId: finishingSessionId,
           flow: 'learning',
-          event: 'session_error',
-          level: 'error',
+          event: notEnoughYet ? 'completion_deferred_not_enough_captured' : 'session_error',
+          level: notEnoughYet ? 'warn' : 'error',
           sessionId: finishingSessionId,
-          details: { reason: error instanceof Error ? error.message : 'Could not finish teaching.' },
+          details: { reason: message },
         }]).catch(() => undefined);
       }
-      setMessage(error instanceof Error ? error.message : 'Could not finish teaching.');
-      // Recording was already disabled above, so no more actions can ever be added to this
-      // session - tapping "Finish teaching" again would just resubmit the identical request and
-      // fail identically forever. Reset back to the start screen so the failure is visible and
-      // the only available action (start a fresh teach) can actually succeed.
-      activeSessionId.current = null;
-      setSessionId(null);
+      if (notEnoughYet && selectedApp) {
+        setMessage('Nothing usable captured yet - keep performing the task, then try Finish teaching again.');
+        await setLearningRecording(true, selectedApp.packageName).catch(() => undefined);
+        timer.current = setInterval(async () => {
+          try {
+            await saveQueuedActions(finishingSessionId);
+          } catch (pollError) {
+            console.warn('Learning poll tick failed (will retry next tick)', pollError);
+          }
+        }, 800);
+      } else {
+        await setLearningRecording(false, undefined).catch(() => undefined);
+        setMessage(message);
+        // A genuine failure (network/session-not-found/etc.) - recording is disabled and there is
+        // no way to recover this specific session, so reset back to the start screen.
+        activeSessionId.current = null;
+        setSessionId(null);
+      }
     } finally {
       stopInFlight.current = false;
       setFinishing(false);
