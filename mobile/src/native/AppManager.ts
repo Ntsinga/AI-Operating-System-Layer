@@ -13,7 +13,11 @@ export type OpenApplicationResult = {
 
 type AppManagerNativeModule = {
   getInstalledApps: () => Promise<InstalledApp[]>;
-  openApplication: (packageName: string) => Promise<OpenApplicationResult>;
+  // forceRestart discards the target app's existing activity back-stack (Intent.FLAG_ACTIVITY_CLEAR_TASK)
+  // instead of just bringing whatever screen it was last on to the foreground - the closest
+  // permission-free equivalent to force-stopping it first. Use true when the caller needs a known,
+  // reproducible starting screen (e.g. teaching); leave false for a normal "open this app" action.
+  openApplication: (packageName: string, forceRestart: boolean) => Promise<OpenApplicationResult>;
 };
 
 const { AppManager } = NativeModules as { AppManager?: AppManagerNativeModule };

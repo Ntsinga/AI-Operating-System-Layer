@@ -48,7 +48,7 @@ class AppManagerModule(private val reactContext: ReactApplicationContext) : Reac
   }
 
   @ReactMethod
-  fun openApplication(packageName: String, promise: Promise) {
+  fun openApplication(packageName: String, forceRestart: Boolean, promise: Promise) {
     try {
       val launchIntent = reactContext.packageManager.getLaunchIntentForPackage(packageName)
       if (launchIntent == null) {
@@ -61,6 +61,19 @@ class AppManagerModule(private val reactContext: ReactApplicationContext) : Reac
 
       // Launching from a non-Activity (application) context requires a new task.
       launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      // Regular apps can't force-stop another app (that needs a system/device-owner permission
+      // this project doesn't have - see ERROR_LOG.md, GoalGuardCard). CLEAR_TASK is the
+      // permission-free equivalent for "start fresh": it discards the target's existing
+      // activity back-stack so the launch intent's activity becomes a true fresh root, instead
+      // of just bringing whatever screen it was last on to the foreground. Opt-in only - default
+      // "open this app" behavior (e.g. the planner's open_application tool) should keep the
+      // normal, less disruptive bring-to-foreground behavior; teaching specifically wants a
+      // known, reproducible starting screen so a taught procedure's recorded steps match what
+      // replay will actually see (ERROR_LOG.md 2026-07-30: procedures taught mid-navigation were
+      // missing the leading steps to reach their own starting screen from a fresh launch).
+      if (forceRestart) {
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+      }
       reactContext.startActivity(launchIntent)
 
       val result = Arguments.createMap().apply {

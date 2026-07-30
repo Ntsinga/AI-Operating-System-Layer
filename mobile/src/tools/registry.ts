@@ -122,7 +122,7 @@ export const openApplicationTool = {
     },
     required: ['packageName'],
   },
-  execute: (input: OpenApplicationInput) => getAppManager().openApplication(input.packageName),
+  execute: (input: OpenApplicationInput) => getAppManager().openApplication(input.packageName, false),
 } satisfies ToolDefinition<OpenApplicationInput, OpenApplicationResult>;
 
 export const getDeviceInfoTool = {

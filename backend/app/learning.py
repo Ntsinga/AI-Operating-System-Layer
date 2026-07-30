@@ -17,7 +17,16 @@ from app.debug_events import record_event
 
 DB_PATH = Path(__file__).parents[1] / "procedural_memory.sqlite3"
 logger = logging.getLogger("aios.learning")
-MAX_ACTIONS_JSON_CHARS = 50000
+# Each action can now embed a compact screen snapshot (added for the hybrid inference pipeline -
+# see LearningWatcherService.kt's addTransitionEvidence/applyInferredTapIfConfident), roughly
+# 3-4KB per action. At the old 50000 budget, a session hit the ceiling after just ~4 real taps;
+# once _compact_actions exhausts noise-type entries (screen_transition/observe/scroll) it falls
+# back to evicting the OLDEST action of any type to make room for each new one - a silent
+# pop-and-push that nets zero growth and looks identical to a lost-update bug (a teaching session
+# stuck reporting the same actionCount across several real appends). Match the client's own
+# MAX_QUEUE_CHARS (400000, LearningWatcherService.kt) since both budgets hold the same shape of
+# payload. See ERROR_LOG.md 2026-07-30 (Book 7 stuck-step-count investigation).
+MAX_ACTIONS_JSON_CHARS = 400000
 MAX_ACTIONS = 80
 
 # append_action's SELECT-then-UPDATE is a classic read-modify-write race: FastAPI runs sync

@@ -4,6 +4,180 @@ Chronological incident log for product issues and task-execution failures. Newes
 
 ---
 
+## 2026-07-30 — Added a third inference case: disappearance correlation ("Start your search")
+
+- **Area**: `LearningWatcherService.kt` (`disappearanceInferenceCandidate`, new).
+- **Context**: after confirming "Start your search" has no persisting node identity to match
+  forward (Compose unmounts it entirely; the modal is a different composable tree, not a mutated
+  version of the same one - see the entry above), the user pushed back: `semanticDiff`'s `removed`
+  bucket was already being computed for every screen_transition, but nothing in the inference
+  logic ever looked at it. An element that existed on the previous screen and is simply gone now
+  is real evidence of what caused the change, even without forward identity to match.
+- **Added**: `disappearanceInferenceCandidate` - a third case (tried after Case A same-node and
+  Case B navigation correlation both fail), reading `semanticDiff.removed` directly (already
+  computed by `addTransitionEvidence` before inference runs, so no extra tree walk needed).
+  Requires exactly one clickable element to have vanished (2+ is the "scroll recycled several
+  list rows" ambiguous case - reject, never guess which one) and a bounded set of 1-6 newly
+  `added` elements alongside it (corroborates "this looks like a modal/sheet reveal," not "it
+  scrolled off with nothing replacing it," and guards against the wholesale-reshuffle risk from
+  the other direction too). Base score 0.4, capped at 0.7 - deliberately below both other cases,
+  since this infers the cause from an absence rather than from any signal the vanished element
+  itself produced.
+- **Validation**: Kotlin compiles clean. On-device re-test (re-teach an Airbnb procedure through
+  the "Start your search" modal and confirm step 0 now captures the search button itself, not one
+  of the modal's new options) pending.
+- Lesson: don't stop investigating once a plausible-sounding "this data doesn't exist" conclusion
+  is reached - the data (`removed`) *did* exist here, computed for an entirely different reason
+  (audit trail) three fixes ago, and simply wasn't being consulted. Worth explicitly checking what
+  evidence is already being captured before concluding a case is unsolvable.
+
+---
+
+## 2026-07-30 — Inferred taps credited a modal's new option instead of the button that opened it
+
+- **Area**: `LearningWatcherService.kt` (`sameNodeInferenceScore`).
+- **Symptom**: teaching "Book 5" (tap "Start your search" -> a modal expands with several new
+  options -> tap "Nearby"), the FIRST recorded step captured `text: "Nearby"`, not "Start your
+  search" - and did so with high confidence, `inferred: true`.
+- **Root cause**: `sameNodeInferenceScore`'s same-node case scored any small, clickable, labeled
+  event-source node highly, with no check for whether that node existed on the PREVIOUS screen at
+  all. When a tap causes a modal to reveal several brand-new options at once, any one of those new
+  options can satisfy every criterion the scorer checks - small bounds, real label, clickable,
+  enabled - despite having zero connection to what was physically touched (the tap that revealed
+  them, not one of the revealed things itself). This is precisely the "which of several
+  equally-plausible new things caused this" ambiguity the whole inference design is supposed to
+  reject rather than resolve; the same-node case just wasn't checking for it.
+- **Investigated further, not fixable by scoring alone**: confirmed "Start your search" itself is
+  unrecoverable by ANY passive-inference improvement for this interaction shape. It's not a
+  same-node state change (Compose unmounts the pill and mounts an entirely different composable
+  tree - the modal - so there is no persisting node identity across the transition to match
+  before/after by resourceId or label) and not a navigation correlation (the label "Start your
+  search" doesn't reappear anywhere in the modal's content). No click event, no persisting
+  identity, and no safe raw-touch API (ruled out earlier the same day: `onMotionEvent()` is
+  Android 14+ and intercepts touches away from the target app). The full evidence set is
+  genuinely exhausted, not under-exploited.
+- **Fix**: added `existedOnPreviousScreen(action)` - checks the event's source (by resourceId, or
+  by label when there's no resourceId) against `lastScreenInteractiveCandidates` (the previous
+  screen's captured elements). `sameNodeInferenceScore` now requires this to be true before
+  scoring anything. Case B (navigation correlation) already had this property by construction (it
+  only ever considers candidates drawn from the previous screen). Net effect: this interaction
+  pattern (tap reveals several new options) now correctly stays an un-inferred `screen_transition`
+  instead of confidently recording the wrong element - a false negative instead of a false
+  positive, which is the right tradeoff given a wrong recorded tap would otherwise execute
+  silently and confidently at replay time.
+- **Proposed next step (not yet built, discussed with user)**: the only way to actually capture
+  "Start your search" itself is a live, teach-time "ask the user" prompt when a screen change has
+  no confident explanation - the "ask the user" step from the original hybrid capture design that
+  was explicitly deferred earlier the same day. Given search-bar-expands-to-modal is a common UI
+  pattern (not unique to Airbnb), this is likely to recur across future teaching sessions for
+  other apps too.
+- **Validation**: Kotlin compiles clean. On-device re-test (re-teach Book 5/6 and confirm "Start
+  your search" no longer gets misattributed to "Nearby") pending.
+
+---
+
+## 2026-07-30 — Uncaught promise rejection crash overlay during teaching, plus a misleading status color
+
+- **Area**: `LearningModeCard.tsx`, `LearnedProceduresCard.tsx`.
+- **Symptom**: user saw a LogBox "Console Error - Uncaught (in promise, id: 1)" overlay during a
+  teaching session: `"Error: Learning session is no longer recording."` (found via a screenshot;
+  logcat didn't surface it since LogBox is a JS-side overlay, not a native crash).
+- **Root cause**: `start()`'s 800ms poll timer passed an `async` arrow function directly to
+  `setInterval` with no try/catch: `setInterval(async () => { await saveQueuedActions(...) }, 800)`.
+  `setInterval` never awaits or handles a rejection from its callback. If a poll tick is still
+  in-flight exactly when `stop()` finishes completing the session (a real race - the backend can
+  mark the session `status != 'recording'` while an earlier tick's own upload request is still
+  travelling), that tick's `appendLearningActionsBatch` call gets the backend's genuine
+  `"Learning session is no longer recording"` 409 and throws with nowhere to catch it.
+- **Fix**: wrapped the poll tick's body in try/catch, logging via `console.warn` instead of
+  letting it escape - a failed *background* tick should never crash anything, since the next
+  tick (or the final drain inside `stop()`) picks up whatever's still pending. Left `stop()`'s own
+  direct calls to `saveQueuedActions` unprotected on purpose - a real failure during the final
+  drain still needs to reach the user via `stop()`'s existing catch block.
+- **Also fixed while investigating (same screenshot)**: `LearnedProceduresCard.tsx`'s
+  `"Replay complete: N executed, M skipped"` status message was always rendered in
+  `colors.positive` (green), including the `0 executed` case - a total replay failure looked
+  identical to a real success at a glance. Added `statusIsWarning` (true when `executed === 0`)
+  and a `statusWarning` style override using `colors.danger`.
+- **Validation**: `npx tsc --noEmit` clean. On-device re-test pending.
+
+---
+
+## 2026-07-30 — Teaching now force-restarts the target app to a known starting screen
+
+- **Area**: `AppManagerModule.kt` (`openApplication`), `AppManager.ts`, `LearningModeCard.tsx`,
+  `registry.ts`.
+- **Context**: two separate investigations today (Book 2, and the "Location picker, Step 1 of 3"
+  confirm-prompt case) traced back to the same root cause - a taught procedure's first recorded
+  step assumed whatever screen the app happened to already be on when teaching started, but
+  replay always launches the app fresh, landing on its actual default screen instead. No amount
+  of smarter selector matching or recovery can fix a step whose target genuinely isn't on screen
+  yet.
+- **Fix**: `openApplication` gained an opt-in `forceRestart` parameter. When true, it adds
+  `Intent.FLAG_ACTIVITY_CLEAR_TASK` alongside the existing `FLAG_ACTIVITY_NEW_TASK` - the
+  permission-free equivalent of force-stopping the target app first (a regular app can't call
+  `forceStopPackage`; that needs a system/device-owner permission this project doesn't have, per
+  the earlier `GoalGuardCard`/device-owner investigation). This discards the target's existing
+  activity back-stack so its launch intent becomes a true fresh root, not just "bring whatever
+  screen it was last on to the foreground." `LearningModeCard.tsx`'s `start()` now passes
+  `forceRestart: true` so every teaching session begins from a known, reproducible screen that
+  will match what replay actually opens to. Left `false` for `registry.ts`'s general-purpose
+  `open_application` tool - that should keep the normal, less disruptive bring-to-foreground
+  behavior for everyday use, not force-restart every app the planner opens.
+- **Note**: since `@ReactMethod` bridge methods require an exact parameter count (no Kotlin-side
+  defaults across the JS<->native boundary), every existing JS call site had to be updated to pass
+  the new argument explicitly, not just the one that needed the new behavior.
+- **Validation**: `npx tsc --noEmit` clean, Kotlin compiles clean. On-device re-test (teach a new
+  Airbnb procedure and confirm it starts from Home every time, then replay it end-to-end) pending.
+
+---
+
+## 2026-07-30 — Recovery overlay read the wrong app's UI mid-replay
+
+- **Area**: `LearningWatcherService.kt` (`attemptBoundedRecovery`, `confirmInferredTapBeforeExecuting`,
+  `attemptTextInputRecovery`).
+- **Symptom**: user reported that during an Airbnb replay they briefly switched to WhatsApp, and
+  when they came back the recovery/confirmation overlay was showing candidate data that
+  referenced WhatsApp's UI, not Airbnb's.
+- **Root cause**: none of the three functions that read `rootInActiveWindow` to build an overlay's
+  content (candidate list, or the label shown in a confirm prompt) verified the current root
+  actually matched the replay's target app first. `collectRecoveryElements`/`collectEditableFields`
+  just read whatever was frontmost at that instant - if the user (or a notification) switched apps
+  right as recovery kicked in, the overlay would silently reflect the wrong app's screen instead of
+  refusing to proceed.
+- **Fix**: new `waitForTargetSurfaceBeforeOverlay(targetSurface)` - reuses the existing
+  `isTargetSurfaceActive` (already hardened earlier today to tolerate transient system surfaces
+  without tolerating a genuinely different app), waits up to 3s for the target to be frontmost
+  again, and returns false if it never resolves. Called at the very start of all three
+  overlay-producing functions; on failure they abort the step cleanly
+  (`recovery_target_surface_not_frontmost`) instead of ever showing a prompt built from another
+  app's data. Required threading `targetSurface` through as a new parameter to all three
+  functions and their three call sites in `replay()`'s main loop.
+- **Separately investigated, not a new bug**: same session, a *different* symptom - after
+  confirming an inferred tap ("Tap 'Location picker, Step 1 of 3'? Yes, tap this"), replay
+  immediately fell into a second, different overlay instead of executing the tap. Traced this
+  fully before writing any fix: confirmed `readableLabel()` does NOT concatenate multiple
+  children's text into a compound string (it returns the first non-blank label found, own or a
+  descendant's) - so the label is very likely one node's own literal text, not a
+  matching-logic problem to fix. But that label demonstrably belongs to Airbnb's search/filter
+  overlay (it appeared alongside "Date Picker, Step 2 of 3", "Guest Picker, Step 3 of 3", "Clear
+  all", "Close" in an earlier capture), and replay always launches onto the Home screen fresh -
+  same root cause as the "Book 2" procedure investigated earlier today: the taught procedure's
+  first step assumes a screen state teaching never actually recorded how to reach. No code fix
+  applied for this one; a smarter-matching fix would have targeted the wrong cause.
+- **Validation**: Kotlin compiles clean. On-device re-test of both fixes pending.
+- Lessons:
+  - Don't ship a fix for a plausible-sounding root cause without checking it against the actual
+    mechanism first. The initial hypothesis for the "falls into another overlay" symptom (compound
+    label text not matching literally) was reasonable but wrong once `readableLabel()`'s real
+    behavior was checked - the evidence pointed to a screen-state mismatch instead, which no
+    amount of smarter text matching could have fixed.
+  - Every place that reads `rootInActiveWindow` to build user-facing content needs the same
+    "is this actually the target app" guard - adding it to one recovery path and not the others
+    (confirm-gate, text-input recovery) leaves the exact same class of bug half-fixed.
+
+---
+
 ## 2026-07-30 — Teaching sessions silently lost taps under concurrent uploads
 
 - **Area**: `backend/app/learning.py` (`append_action`), `mobile/src/components/LearningModeCard.tsx`.
@@ -1073,3 +1247,182 @@ install-time validation requirement rather than something this Windows workspace
   same-node inferred-tap confidence; the diff is no longer documentation-only. The previous-screen
   snapshot is retained by reference because the event snapshot is not mutated afterward. Payload
   size remains unchanged pending real-session compaction measurements.
+
+## 2026-07-30 (same day, follow-up) — Two independent bugs behind "Book 6 captured the wrong element" and "Book 7's steps got stuck alternating"
+
+User reported three symptoms from the same teaching pass: Book 6 correctly captured "Start your
+search" but then captured "Popular homes in Bugolobi" (a Home-screen listing header) instead of
+the "Nearby" option the user actually tapped inside the newly-opened search modal; the replay-time
+recovery overlay showed Home-screen candidates instead of the modal's; and a new session, Book 7,
+captured a procedure that just alternates `tap 'Experiences'` / `tap 'Services'` / `tap 'Close'`
+with no real steps. Investigated per explicit instruction to use logcat and DB events rather than
+guessing. Found two separate, compounding bugs — not the concurrency lock (re-verified live with a
+fresh 20-concurrent-request test against a throwaway session: 20/20 survived, ruling it out
+directly).
+
+**Bug 1 — accessibility focus-oscillation storm (`LearningWatcherService.kt`, client)**
+
+- **Symptom**: `adb logcat -s AIOS.Learning` during Book 7's teaching window showed the bottom tab
+  bar elements ("Experiences"/"Services"/"Close") logged as `action":"tap"` dozens of times in a
+  row, gaps of 60–420ms, for 4+ continuous seconds while the user was actually interacting with
+  the date-picker calendar — clearly not real taps. The identical pattern (rapid oscillation
+  between "Popular homes in Bugolobi"/"Experiences NEW"/"Services NEW") appeared earlier in the
+  same log while the user was on the Home feed, right before the real "Nearby" tap — this is what
+  got recorded as Book 6's step 1 instead of "Nearby".
+- **Root cause**: Compose screens with heavy re-layout (the calendar, the feed) fire genuine,
+  repeated `TYPE_VIEW_FOCUSED` events on a small set of persistent chrome elements as accessibility
+  focus bounces during recomposition. `syntheticActivationBeforeFocus` promotes each one straight
+  to a synthetic `tap`. Its only guard, `hasRecentFocusOrTapForSameTarget`, compares a new focus
+  event only against the single immediately-preceding queue entry — so alternation between 2+
+  targets (Experiences → Services → Close → Experiences → …) defeats it on every single event,
+  since neighboring entries never share the same target.
+- **Fix**: added a time-windowed storm detector (`isFocusPromotionStormSuppressed`, ~30 lines
+  above `syntheticActivationBeforeFocus`). Qualifying focus events less than 900ms apart count as
+  one storm episode (no human deliberately taps distinct targets faster than that in a sustained
+  burst); only the first 2 events per episode are promoted to synthetic taps, the rest are
+  suppressed and logged as `synthetic_tap_suppressed_focus_storm`. The episode resets after any
+  real ~900ms gap, so genuine sequential user taps are unaffected.
+- **Validation**: `:app:compileDebugKotlin` clean. Rebuilt and installed on device
+  (`lastUpdateTime` confirmed advanced). On-device re-teach to confirm the storm no longer pollutes
+  a real session is still pending — flagged for the user's next teaching pass.
+
+**Bug 2 — backend action-array char budget sized for the pre-instrumentation payload shape (`backend/app/learning.py`)**
+
+- **Symptom**: Book 7's raw `action_appended` debug-event trace showed `actionCount` stuck at the
+  same value across multiple real appends (`step=3` three times running with different tapped
+  text, then `step=4` twice) — the exact visible signature of the old lost-update race, but the
+  lock was already re-verified working.
+- **Root cause**: direct query of Book 7's stored session (`5eb1ac0c-…`) showed only 4 actions
+  stored but `len(actions_json) == 49988` — one action embeds a ~4KB compact `screen` snapshot
+  (added earlier this same day for the hybrid inference pipeline; see the entry above). Against
+  `MAX_ACTIONS_JSON_CHARS = 50000`, that's the ceiling after only ~4 real actions. Once
+  `_compact_actions` exhausts `NOISE_ACTION_TYPES` entries (`screen_transition`/`observe`/`scroll`)
+  it falls back to evicting the *oldest action of any type* — including real taps — to make room
+  for each new one. Net effect: pop one real step, push one real step, `len()` doesn't grow. Purely
+  a payload-size regression from the new screen-embed instrumentation; the 50000 budget was never
+  updated to match. (The follow-up note in the entry above — "payload size remains unchanged
+  pending real-session compaction measurements" — was the flag that this needed checking; it
+  wasn't checked until this incident forced it.)
+- **Fix**: raised `MAX_ACTIONS_JSON_CHARS` from 50000 to 400000, matching the client's own
+  `MAX_QUEUE_CHARS` (`LearningWatcherService.kt`) which budgets the same payload shape.
+- **Validation**: full backend suite 54/54 passing. **Not yet deployed to Render** — this fix only
+  helps once pushed; local `sqlite`/test runs don't reflect production until then.
+- Lessons:
+  - When two independent budgets (client queue-trim size, backend compaction size) exist for the
+    same payload shape, a change that grows the payload on one side silently invalidates the other
+    side's sizing unless both are updated together. Search for the sibling constant whenever
+    changing what a record contains, not just whether it fits.
+  - A "stuck step count" and "wrong element captured" reported together in the same session can
+    have two entirely unrelated causes that only look connected because they hit the same teaching
+    pass — don't stop at the first plausible explanation (concurrency was the obvious first guess
+    from prior history) once it's been directly disproven; keep pulling the thread with real
+    evidence (logcat, direct DB query) rather than pattern-matching to the last similar bug.
+
+## 2026-07-30 (same day, follow-up 2) — The focus-storm fix didn't cover Case A/B/C's own storm vulnerability (Book 8)
+
+- **Symptom**: after the two fixes above shipped, user reported Book 8: "Start your search" was
+  correctly captured, there was "a long wait" before the real "Nearby" tap, and the recording
+  captured "Home" and "Services" instead — the same class of wrong-element capture, on a freshly
+  rebuilt app.
+- **Investigation**: direct query of Book 8's session (`27b5dea1-…`) showed 4 stored actions —
+  `Start your search`, `Homes`, `Profile`, `Wishlists` — all `inferred: true` via Case A ("single
+  clickable node changed state"), all with `confidence` well above threshold. Critically, all four
+  carried **byte-identical** `preScreen`/`postScreen` snapshots (the same 10-element Home-screen
+  bottom nav bar) and an **empty** `semanticDiff` (`added`/`removed`/`changedState` all `[]`) — the
+  screen never actually visibly changed across any of these four events. `debug_events` timestamps
+  put all four within ~1 second of each other.
+- **Root cause**: the previous entry's fix only guarded the *focus→tap* promotion path
+  (`syntheticActivationBeforeFocus`). Case A/B/C (`applyInferredTapIfConfident`, triggered from
+  `screen_transition` events) had no equivalent protection. A burst of `screen_transition` events
+  can fire in a row while something is still settling (a modal animating in, a network fetch) —
+  each carrying an arbitrary, different node as `event.source` even though nothing detectably
+  changed. Case A only ever looks at one event in isolation, so any later event in the same burst
+  can independently satisfy "small labeled clickable element, existed on the previous screen" —
+  which is trivially true for persistent bottom-nav items on almost every screen. Requiring
+  `semanticDiff` corroboration doesn't distinguish real from spurious here, since the **real**
+  capture's diff was also empty — the tapped element's own visible effect (the modal opening)
+  hadn't rendered yet when the snapshot was taken. Only recency does: the real tap's event is
+  reliably first in the burst; everything after it in the same tight window is settling noise.
+- **Fix**: added the same storm-episode pattern used for the focus path, this time gating
+  `applyInferredTapIfConfident`'s three cases through a shared `acceptInferredTap()` helper and
+  `isInferredTapStormSuppressed()` — only the *first* accepted inferred tap (across any of Case
+  A/B/C) per ~1000ms episode is kept; anything else within that window is logged as
+  `inferred_tap_suppressed_storm` and discarded, regardless of which case would have accepted it.
+- **Validation**: `:app:compileDebugKotlin` clean. Rebuilt and installed on device (`lastUpdateTime`
+  confirmed advanced to 2026-07-30 15:57:32). On-device re-teach to confirm the fix holds for a
+  live "Start your search → Nearby" sequence is still pending.
+- Lessons:
+  - A fix scoped to "the code path that produced this specific bad log line" doesn't necessarily
+    cover "the class of bug that produced it" — the focus-oscillation fix and this one address the
+    identical underlying phenomenon (spurious accessibility events during UI settling misattributed
+    as taps) through two structurally separate pipelines (`syntheticActivationBeforeFocus` vs.
+    `applyInferredTapIfConfident`) that happened to need the same shape of fix independently. When
+    a root cause is "the platform fires more events than there were real interactions," check every
+    place that promotes an event to a recorded action, not just the one the evidence pointed at
+    first.
+  - Requiring corroborating evidence (a non-empty diff) is not always the right tightening — here
+    it would have rejected the *correct* capture too, since the real tap's own visible effect
+    hadn't rendered by the time the snapshot was taken. Recency/uniqueness-per-burst was the signal
+    that actually separated real from spurious in the concrete data; don't assume "add a stricter
+    content check" is always safer than "add a timing check" without checking what the real
+    captures actually look like.
+
+## 2026-07-30 (same day, follow-up 3) — Our own app was auto-stopping every recent teaching session, not the user leaving Airbnb (Books 9/10)
+
+- **Symptom**: user reported Book 9 "failed" and asked to confirm the debugging instrumentation
+  itself was adequate. Also reported (mid-investigation, correcting an early hypothesis) that they
+  **never typed** during any of these sessions, ruling out the keyboard as a user-initiated trigger.
+- **Investigation**: queried the three most recent Airbnb learning_sessions directly and their full
+  `debug_events` traces. Two attempts were both named "Book 9" (`b66bb8b8`, `67d43e7a` - the first
+  clearly a false start the user immediately retried) and a third, "Book 10" (`8da51347`),
+  eventually completed with 11 actions. `b66bb8b8`'s raw `action_appended` trace showed
+  `actionCount` genuinely jumping **backward** repeatedly (1,2,3,3,2,2,2,3,3,3,3,4,4,3,3,3,3,3,2,2,
+  2,2,2,2,2,3,4) - real evidence of lost appends, distinct from the merely-*stuck* pattern from the
+  earlier Book 7 investigation. Root cause: the `MAX_ACTIONS_JSON_CHARS` fix from earlier today
+  (50000 → 400000) was written and tested locally but **never deployed to Render** - the old 50000
+  budget is still live in production, and these newer sessions carry even heavier per-action
+  payloads (focus + text_input + several screen_transitions, each embedding a full snapshot),
+  so compaction is popping *multiple* items per append to get back under budget, which is exactly
+  what produces a net decrease larger than 1. A `session_error` ("No actionable taps... Try
+  teaching again") fired mid-session at `13:01:42.759`, consistent with compaction evicting the
+  session's only actionable step right before something tried to complete it.
+- **Bigger finding**: cross-referencing raw logcat against this trace explained *why* something
+  tried to complete the session that early. All three sessions that day show a burst of hundreds of
+  `recording_event_skipped/target_not_frontmost` events followed by `recording_auto_stopped`
+  (`reason: target_app_exited`) - and extracting the actual `activeRootSurface`/`eventSurface`
+  fields from the raw log (not just the event name) showed **all three** `recording_auto_stopped`
+  firings had `activeRootSurface == eventSurface == com.aioperatingsystem` - our own app, never a
+  third-party app switch. The user confirmed they never left Airbnb or typed anything.
+- **Root cause**: `onAccessibilityEvent`'s auto-stop guard already exempts transient system
+  surfaces (launcher/systemui/keyboard, via `isTransientNavigationSurface`) from counting as
+  evidence the user left the target app - added earlier this session after real launcher-glimpse
+  false positives. It never exempted **our own package**. `isTargetSurfaceActive` (the analogous
+  replay-side check, used by recovery/confirmation overlays) already has this exact exemption
+  (`currentRoot == packageName`) - it was never carried over to the recording-side guard. So any
+  time our own foreground-service notification or an accessibility overlay window briefly became
+  the reported root (which `rootInActiveWindow` can glitch to report, same as the launcher), the
+  auto-stop guard concluded the user had switched to a different real app and permanently killed
+  the recording - even though the event's own `packageName` was still genuinely Airbnb the whole
+  time. This is almost certainly why 2 of the last 3 teaching attempts needed a restart with no
+  clear reason and why "Book 9"'s first attempt only captured 3 real steps.
+- **Fix**: `LearningWatcherService.kt` - both the hard auto-stop condition and the noisy
+  `target_not_frontmost` skip-check (which was also discarding genuine in-flight events during the
+  same glitch, not just risking auto-stop) now exempt `activeRootPackage == packageName` /
+  `surface == packageName`, mirroring `isTargetSurfaceActive`'s existing pattern exactly.
+- **Validation**: `:app:compileDebugKotlin` clean. Rebuilt and installed on device. Backend fix from
+  earlier today (`MAX_ACTIONS_JSON_CHARS`) still needs an actual Render deploy to take effect in
+  production - flagged to the user as now higher priority given fresh evidence it's actively
+  corrupting live sessions.
+- Lessons:
+  - When a fix introduces an exemption for one path (`isTargetSurfaceActive`'s `== packageName`
+    check), check every OTHER path making a structurally identical trustworthiness judgment
+    (the recording-side auto-stop guard checks the same kind of "is this really evidence the user
+    left" question) for the same gap - a fix applied to only the path that happened to be under
+    investigation at the time leaves siblings silently vulnerable.
+  - Don't stop at "the event name is `recording_auto_stopped`, reason `target_app_exited`" -
+    extract the actual surface/package fields the decision was based on before trusting the
+    stated reason. The reason string was accurate to the code's own (buggy) judgment, not to what
+    actually happened.
+  - A fix that's written, tested, and reported as "not yet deployed" doesn't stay theoretical -
+    it keeps actively corrupting every subsequent production session until it's actually pushed.
+    Treat "confirmed root cause, fix ready, not deployed" as an open incident, not a closed one.

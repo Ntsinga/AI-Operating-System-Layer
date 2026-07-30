@@ -57,6 +57,10 @@ export function LearnedProceduresCard() {
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  // "Replay complete" is not the same claim as "replay worked" - 0 executed / N skipped is a
+  // total failure that was previously shown in the same green/success color as a real completion,
+  // which is exactly what made a genuinely broken replay look fine at a glance.
+  const [statusIsWarning, setStatusIsWarning] = useState(false);
   const [busy, setBusy] = useState<BusyState | null>(null);
   const [page, setPage] = useState(0);
 
@@ -161,6 +165,7 @@ export function LearnedProceduresCard() {
         step: typeof event.step === 'number' ? event.step : undefined,
         details: typeof event.details === 'object' && event.details !== null ? event.details as Record<string, unknown> : {},
       }))).catch(() => undefined);
+      setStatusIsWarning(result.executed === 0);
       setStatus(`Replay complete: ${result.executed} action(s) executed, ${result.skipped} skipped.`);
     } catch (replayError) {
       await recordDebugEvents([{
@@ -191,7 +196,7 @@ export function LearnedProceduresCard() {
     <Text style={styles.title}>Learned procedures</Text>
     <Text style={styles.description}>Review, replay, or delete what AI-OS has learned. No screenshots or tool results are stored.</Text>
     {error ? <Text style={styles.error}>{error}</Text> : null}
-    {status ? <Text style={styles.status}>{status}</Text> : null}
+    {status ? <Text style={[styles.status, statusIsWarning ? styles.statusWarning : null]}>{status}</Text> : null}
     {procedures.length === 0 ? <Text style={styles.empty}>No procedures saved yet.</Text> : shown.map((procedure) => {
       return (
         <View key={procedure.id} style={styles.row}>
@@ -224,6 +229,7 @@ const styles = StyleSheet.create({
   empty: { color: colors.textMuted, fontSize: 13, marginTop: 12 },
   error: { color: colors.dangerText, fontSize: 12, marginTop: 8 },
   status: { color: colors.positive, fontSize: 12, fontWeight: '700', marginTop: 8 },
+  statusWarning: { color: colors.danger },
   pagerRow: { alignItems: 'center', flexDirection: 'row', gap: 10, justifyContent: 'space-between', marginTop: 12 },
   pagerButton: { borderColor: colors.border, borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 7 },
   pagerButtonText: { color: colors.accent, fontSize: 12, fontWeight: '700' },

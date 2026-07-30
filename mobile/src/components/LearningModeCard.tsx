@@ -60,8 +60,26 @@ export function LearningModeCard() {
         details: { appPackage: selectedApp.packageName, intent: intent.trim() },
       }]).catch(() => undefined);
       setMessage(`Recording ${selectedApp.name}. Perform the task, then return here to finish.`);
-      timer.current = setInterval(async () => { await saveQueuedActions(session.sessionId); }, 800);
-      await getAppManager().openApplication(selectedApp.packageName);
+      // setInterval never awaits its callback or handles a rejection from it - if a tick is
+      // still in flight exactly when stop() completes the session (a real race: the backend can
+      // mark it "no longer recording" while this tick's own upload request is mid-flight), that
+      // tick throws with nowhere to catch it, surfacing as an unhandled promise rejection. A
+      // failed background poll tick must never crash the app this way - the final drain inside
+      // stop() is what actually needs a real failure to propagate to the user.
+      timer.current = setInterval(async () => {
+        try {
+          await saveQueuedActions(session.sessionId);
+        } catch (error) {
+          console.warn('Learning poll tick failed (will retry next tick)', error);
+        }
+      }, 800);
+      // forceRestart=true: discard any existing back-stack for the target app so teaching always
+      // starts from its actual default launch screen, not wherever it was last left open. Without
+      // this, a procedure taught mid-navigation (e.g. already inside a search/filter screen) ends
+      // up missing the leading steps to reach that screen from a fresh launch - replay always
+      // opens the app fresh, so those steps are unrecoverable at replay time no matter how good
+      // the recovery system is. See ERROR_LOG.md 2026-07-30 (Book 2/Book 3 Airbnb procedures).
+      await getAppManager().openApplication(selectedApp.packageName, true);
     } catch (error) {
       activeSessionId.current = null;
       setSessionId(null);
