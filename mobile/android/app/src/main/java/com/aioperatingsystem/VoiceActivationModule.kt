@@ -43,6 +43,16 @@ class VoiceActivationModule(private val reactContext: ReactApplicationContext) :
     promise.resolve(VoiceActivationService.isRunning)
   }
 
+  /** Called by LiveVoiceButton.tsx once a live voice session ends (naturally or by the
+   * user stopping it), so the wake-word service can resume listening if it's the one
+   * that launched this session - see VoiceActivationService.handleKeywordDetected() /
+   * resumeAfterLiveVoice(). No promise: this is fire-and-forget, and a no-op if the
+   * service isn't running (e.g. the session was started from the manual chat button). */
+  @ReactMethod
+  fun notifyLiveSessionEnded() {
+    VoiceActivationService.resumeAfterLiveVoice(reactContext)
+  }
+
   @ReactMethod
   fun getSetupStatus(promise: Promise) {
     val result = Arguments.createMap().apply {

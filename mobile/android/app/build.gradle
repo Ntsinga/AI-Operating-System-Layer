@@ -168,6 +168,12 @@ dependencies {
     // Sherpa-ONNX JNI runtime; the small English KWS model lives in assets.
     implementation files('libs/sherpa-onnx-1.13.4.aar')
 
+    // WebSocket client for LiveVoiceModule's connection to the backend's /live/ws
+    // (full-duplex GPT-Live-1 audio relay - see backend/app/live_voice.py). React Native's
+    // own networking stack uses OkHttp internally but doesn't expose it for direct native-
+    // module use, hence a small explicit, pinned dependency instead of relying on that.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // CameraX: used by TimedCameraActivity for an in-app, auto-firing timed photo
     // capture (take_photo). Delegating to the stock Camera app via an Intent cannot
     // be driven to auto-fire after a countdown - only a real in-app camera can.

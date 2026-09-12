@@ -20,6 +20,7 @@ class AppToolsPackage : ReactPackage {
     AudioRecorderModule(reactContext),
     OverlayModule(reactContext),
     VoiceActivationModule(reactContext),
+    LiveVoiceModule(reactContext),
     WallpaperModule(reactContext),
     BrowserModule(reactContext),
     StorageInfoModule(reactContext),

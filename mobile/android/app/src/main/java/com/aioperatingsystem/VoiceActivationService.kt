@@ -35,10 +35,19 @@ import kotlin.math.max
 private const val VOICE_CHANNEL_ID = "aios_voice_activation_channel"
 private const val VOICE_NOTIFICATION_ID = 4302
 private const val ACTION_STOP = "com.aioperatingsystem.VOICE_ACTIVATION_STOP"
+private const val ACTION_RESUME_AFTER_LIVE_VOICE = "com.aioperatingsystem.VOICE_ACTIVATION_RESUME_AFTER_LIVE_VOICE"
 private const val WAKE_PHRASE = "hey casper"
-private const val KWS_SAMPLE_RATE = 16000
+// Not private: LiveVoiceModule.kt reads this to resample the handoff buffer below to
+// its own capture rate - same package, so no import needed.
+const val KWS_SAMPLE_RATE = 16000
 private const val KWS_MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
 private const val COMMAND_LISTEN_TIMEOUT_MS = 3000L
+// How long to keep audio buffered after "Hey Casper" while a live session connects, and
+// the sample cap that corresponds to at 16kHz - generous enough to cover real connection
+// latency (app foreground + WebSocket handshake) without buffering indefinitely if a
+// session never claims it (see handoffBufferTimeout).
+private const val HANDOFF_BUFFER_MAX_MS = 8000L
+private const val HANDOFF_BUFFER_MAX_SAMPLES = KWS_SAMPLE_RATE * 8
 private const val TAG = "AiosVoiceActivation"
 
 /** Opt-in, foreground microphone listener for the "Hey Casper" activation phrase. */
@@ -53,6 +62,25 @@ class VoiceActivationService : Service() {
   @Volatile private var keywordListening = false
   private var keywordMode = false
   private val mainHandler = Handler(Looper.getMainLooper())
+
+  // Audio buffered since "Hey Casper" while a live voice session connects (LiveVoiceModule
+  // claims it via takeHandoffAudioSamples() the moment it's ready to open its own mic) - see
+  // handleKeywordDetected()/beginHandoffBuffering(). Guarded by its own monitor since it's
+  // written from the KWS capture thread and read from whatever thread claims it.
+  private val pendingAudioChunks = mutableListOf<ShortArray>()
+  private var pendingAudioSampleCount = 0
+  @Volatile private var bufferingForHandoff = false
+  private val handoffBufferTimeout = Runnable {
+    if (bufferingForHandoff) {
+      Log.i(TAG, "Live session never claimed the handoff audio buffer within ${HANDOFF_BUFFER_MAX_MS}ms; discarding it")
+      synchronized(pendingAudioChunks) {
+        bufferingForHandoff = false
+        pendingAudioChunks.clear()
+        pendingAudioSampleCount = 0
+      }
+    }
+  }
+
   private val commandTimeout = Runnable {
     if (isRunning && armedForCommand) {
       Log.i(TAG, "No command received within ${COMMAND_LISTEN_TIMEOUT_MS}ms; returning to wake-word listening")
@@ -71,6 +99,16 @@ class VoiceActivationService : Service() {
     var isRunning: Boolean = false
       private set
 
+    @Volatile
+    private var runningInstance: VoiceActivationService? = null
+
+    /** Called by LiveVoiceModule.kt right before it opens its own AudioRecord for a live
+     * session - hands back (and stops buffering) whatever was said since "Hey Casper", so
+     * it can be sent as the session's first audio instead of being lost to the connection
+     * gap. Returns an empty array if nothing was buffered (e.g. the session was started
+     * from the manual chat-tab button, not the wake word). Safe to call from any thread. */
+    fun takeHandoffAudioSamples(): ShortArray = runningInstance?.drainHandoffBuffer() ?: ShortArray(0)
+
     fun start(context: android.content.Context) {
       val intent = Intent(context, VoiceActivationService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
@@ -80,6 +118,16 @@ class VoiceActivationService : Service() {
     fun stop(context: android.content.Context) {
       context.stopService(Intent(context, VoiceActivationService::class.java))
     }
+
+    /** Called by VoiceActivationModule.notifyLiveSessionEnded() once a GPT-Live-1 session
+     * that this service launched (see launchLiveVoice()) has ended, so the service can
+     * resume wake-word listening. A no-op if the service isn't running - e.g. the user
+     * started a live session from the manual chat button instead of the wake word, or
+     * stopped voice activation entirely while a session was live. */
+    fun resumeAfterLiveVoice(context: android.content.Context) {
+      if (!isRunning) return
+      context.startService(Intent(context, VoiceActivationService::class.java).apply { action = ACTION_RESUME_AFTER_LIVE_VOICE })
+    }
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -88,6 +136,7 @@ class VoiceActivationService : Service() {
     super.onCreate()
     startForegroundWithNotification("Listening for \"Hey Casper\"")
     isRunning = true
+    runningInstance = this
 
     // Prefer a dedicated on-device KWS loop. It only decodes the configured
     // phrase and therefore avoids the false accepts and latency of continuous
@@ -116,7 +165,16 @@ class VoiceActivationService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) stopSelf()
+    if (intent?.action == ACTION_RESUME_AFTER_LIVE_VOICE) resumeListeningAfterLiveVoice()
     return START_STICKY
+  }
+
+  private fun resumeListeningAfterLiveVoice() {
+    if (!isRunning || keywordListening || listening) return
+    Log.i(TAG, "Live voice session ended; resuming wake-word listening")
+    OverlayService.setAttentionState(this, "idle")
+    updateNotification("Listening for \"Hey Casper\"")
+    if (keywordMode) startKeywordSpotter() else listen()
   }
 
   private val listener = object : RecognitionListener {
@@ -285,6 +343,14 @@ class VoiceActivationService : Service() {
       while (keywordListening) {
         val count = runCatching { record.read(buffer, 0, buffer.size) }.getOrDefault(0)
         if (count <= 0) continue
+        if (bufferingForHandoff) {
+          synchronized(pendingAudioChunks) {
+            if (pendingAudioSampleCount < HANDOFF_BUFFER_MAX_SAMPLES) {
+              pendingAudioChunks.add(buffer.copyOf(count))
+              pendingAudioSampleCount += count
+            }
+          }
+        }
         val samples = FloatArray(count) { buffer[it] / 32768.0f }
         stream.acceptWaveform(samples, KWS_SAMPLE_RATE)
         while (keywordListening && spotter.isReady(stream)) {
@@ -317,18 +383,50 @@ class VoiceActivationService : Service() {
 
   private fun handleKeywordDetected(keyword: String) {
     if (!isRunning || armedForCommand) return
-    Log.i(TAG, "Wake word detected: $keyword")
-    stopKeywordSpotter()
-    armedForCommand = true
-    scheduleCommandTimeout()
-    OverlayService.setAttentionState(this, "attentive")
-    updateNotification("Wake phrase heard - listening for your command")
-    mainHandler.postDelayed({
-      if (isRunning && armedForCommand) {
-        OverlayService.setAttentionState(this, "listening")
-        startCommandListening()
+    Log.i(TAG, "Wake word detected: $keyword - buffering audio while a live session connects")
+    // Deliberately NOT stopping the KWS mic here - it keeps capturing into
+    // pendingAudioChunks (see the read loop in startKeywordSpotter()) for as long as it
+    // takes the live session to connect (app foreground + WebSocket handshake), so nothing
+    // said right after "Hey Casper" is lost to that gap. LiveVoiceModule.kt claims (and
+    // only then stops) it via takeHandoffAudioSamples() right before opening its own
+    // AudioRecord. resumeAfterLiveVoice() (via notifyLiveSessionEnded() from JS) is still
+    // what resumes listening if the session never claims the buffer at all.
+    beginHandoffBuffering()
+    OverlayService.setAttentionState(this, "listening")
+    updateNotification("Hey Casper - live conversation")
+    launchLiveVoice()
+  }
+
+  private fun beginHandoffBuffering() {
+    synchronized(pendingAudioChunks) {
+      pendingAudioChunks.clear()
+      pendingAudioSampleCount = 0
+      bufferingForHandoff = true
+    }
+    mainHandler.removeCallbacks(handoffBufferTimeout)
+    mainHandler.postDelayed(handoffBufferTimeout, HANDOFF_BUFFER_MAX_MS)
+  }
+
+  private fun drainHandoffBuffer(): ShortArray {
+    val wasBuffering = bufferingForHandoff
+    mainHandler.removeCallbacks(handoffBufferTimeout)
+    val merged = synchronized(pendingAudioChunks) {
+      bufferingForHandoff = false
+      val result = ShortArray(pendingAudioSampleCount)
+      var offset = 0
+      for (chunk in pendingAudioChunks) {
+        chunk.copyInto(result, offset)
+        offset += chunk.size
       }
-    }, 150L)
+      pendingAudioChunks.clear()
+      pendingAudioSampleCount = 0
+      result
+    }
+    if (wasBuffering) {
+      Log.i(TAG, "Handing off ${merged.size} buffered samples to the live session")
+      stopKeywordSpotter()
+    }
+    return merged
   }
 
   private fun handleTranscript(rawTranscript: String, wakeCandidate: Boolean = false) {
@@ -411,6 +509,18 @@ class VoiceActivationService : Service() {
     intent?.let { startActivity(it) }
   }
 
+  /** Foregrounds the app straight into a live GPT-Live-1 conversation (LiveVoiceButton's
+   * autoStart, via App.tsx's aios://voice?live=1 handling) instead of the old one-shot
+   * SpeechRecognizer command capture. */
+  private fun launchLiveVoice() {
+    val intent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+      action = Intent.ACTION_VIEW
+      data = Uri.parse("aios://voice?live=1")
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+    }
+    intent?.let { startActivity(it) }
+  }
+
   private fun startForegroundWithNotification(text: String) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val channel = NotificationChannel(VOICE_CHANNEL_ID, "AI-OS voice activation", NotificationManager.IMPORTANCE_LOW)
@@ -434,6 +544,7 @@ class VoiceActivationService : Service() {
 
   override fun onDestroy() {
     isRunning = false
+    runningInstance = null
     mainHandler.removeCallbacksAndMessages(null)
     cancelCommandTimeout()
     stopKeywordSpotter()

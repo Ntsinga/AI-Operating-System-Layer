@@ -12,12 +12,29 @@ import {
 import { colors } from '../theme';
 import { getInstalledAppsTool, tools } from '../tools/registry';
 import { getBriefStore } from '../native/BriefStore';
+import type { ProposedToolEvent } from '../native/LiveVoice';
 import { GradientButton } from './GradientButton';
+import { LiveVoiceButton } from './LiveVoiceButton';
 import { VoiceInputButton } from './VoiceInputButton';
 
 type Phase = 'idle' | 'starting' | 'awaiting_confirmation' | 'awaiting_reply' | 'running' | 'done';
 
-export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { initialCommand?: string | null; onInitialCommandConsumed?: () => void }) {
+type WorkflowCardProps = {
+  initialCommand?: string | null;
+  onInitialCommandConsumed?: () => void;
+  // Set by App.tsx's aios://voice?live=1 deep link (VoiceActivationService.kt, after
+  // "Hey Casper") - auto-starts LiveVoiceButton's session instead of dropping text into
+  // the command box, mirroring initialCommand's auto-start for typed/one-shot commands.
+  liveVoiceRequested?: boolean;
+  onLiveVoiceRequestConsumed?: () => void;
+};
+
+export function WorkflowCard({
+  initialCommand,
+  onInitialCommandConsumed,
+  liveVoiceRequested,
+  onLiveVoiceRequestConsumed,
+}: WorkflowCardProps) {
   const [command, setCommand] = useState('');
   const [replyText, setReplyText] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
@@ -43,6 +60,22 @@ export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { ini
     setTranscribedNotice(null);
     setReusedProcedureCount(0);
     setError(message);
+  }
+
+  // A GPT-Live-1 session proposed a tool (backend/app/live_voice.py's "proposed_tool"
+  // control frame, relayed by LiveVoiceButton). Feed it through the exact same
+  // confirm-card / auto-execute policy a typed command's startWorkflow() response
+  // already goes through below - live voice and text share one policy, not two.
+  function handleLiveProposedTool(event: ProposedToolEvent) {
+    setError(null);
+    setCommand('');
+    applyResponse({
+      threadId: event.threadId,
+      status: 'awaiting_confirmation',
+      proposedTool: event.proposedTool,
+      history: completedSteps,
+      reusedProcedureCount,
+    });
   }
 
   function reset() {
@@ -225,6 +258,12 @@ export function WorkflowCard({ initialCommand, onInitialCommandConsumed }: { ini
           editable={phase === 'idle'}
         />
         <VoiceInputButton onTranscribed={handleTranscribed} onError={handleVoiceError} />
+        <LiveVoiceButton
+          onProposedTool={handleLiveProposedTool}
+          onError={handleVoiceError}
+          autoStart={liveVoiceRequested}
+          onAutoStartConsumed={onLiveVoiceRequestConsumed}
+        />
       </View>
 
       {transcribedNotice ? <Text style={styles.transcribedNotice}>{transcribedNotice}</Text> : null}

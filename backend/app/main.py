@@ -1,20 +1,19 @@
-import uuid
 import logging
 from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from langgraph.types import Command
 from pydantic import BaseModel
 
 load_dotenv()
 
-from app.graph import MAX_STEPS, compiled_graph  # noqa: E402  (must load .env first)
+from app.graph import MAX_STEPS, WorkflowResponse, compiled_graph, format_response, resume_thread, start_thread  # noqa: E402  (must load .env first)
 from app.search import search_images, search_web  # noqa: E402
 from app.transcribe import transcribe_audio  # noqa: E402
+from app.live_voice import LiveVoiceBridge, resolve_pending_resume  # noqa: E402
 from app.google_oauth import exchange as exchange_google_oauth, start_url as google_start_url, status as google_status  # noqa: E402
 from app.google_api import calendar_upcoming, drive_search, gmail_search, gmail_read, drive_read, gmail_create_draft, calendar_create_event  # noqa: E402
 from app.expenses import monthly_finances  # noqa: E402
@@ -317,16 +316,6 @@ class WorkflowFinalizeRequest(BaseModel):
     outcome: str = "succeeded"
 
 
-class WorkflowResponse(BaseModel):
-    threadId: str
-    status: str  # "awaiting_confirmation" | "awaiting_reply" | "done"
-    proposedTool: Optional[dict[str, Any]] = None
-    message: Optional[str] = None
-    finalMessage: Optional[str] = None
-    history: Optional[list[dict[str, Any]]] = None
-    reusedProcedureCount: int = 0
-
-
 @app.get("/procedures")
 def procedures_list() -> list[dict[str, Any]]:
     return list_procedures()
@@ -347,85 +336,46 @@ def procedures_approve(procedure_id: int) -> dict[str, bool]:
     return {"approved": approve_procedure(procedure_id)}
 
 
-def _format_response(thread_id: str) -> WorkflowResponse:
-    config = {"configurable": {"thread_id": thread_id}}
-    snapshot = compiled_graph.get_state(config)
-
-    if snapshot.next:
-        task = snapshot.tasks[0]
-        if not task.interrupts:
-            raise HTTPException(500, "Graph paused with no interrupt payload.")
-        interrupt_value = task.interrupts[0].value
-        kind = interrupt_value.get("kind")
-
-        if kind == "tool_call":
-            return WorkflowResponse(
-                threadId=thread_id,
-                status="awaiting_confirmation",
-                proposedTool=interrupt_value["proposedTool"],
-                history=snapshot.values.get("history", []),
-                reusedProcedureCount=len(snapshot.values.get("proceduralMemory", [])),
-            )
-        if kind == "awaiting_reply":
-            return WorkflowResponse(
-                threadId=thread_id,
-                status="awaiting_reply",
-                message=interrupt_value["message"],
-                history=snapshot.values.get("history", []),
-                reusedProcedureCount=len(snapshot.values.get("proceduralMemory", [])),
-            )
-        raise HTTPException(500, f"Unknown interrupt kind: {kind!r}")
-
-    # Graph truly ended - only happens by hitting MAX_STEPS (safety cap).
-    values = snapshot.values
-    history = values.get("history", [])
-    last_assistant_text = next(
-        (
-            msg["content"]
-            for msg in reversed(values.get("messages", []))
-            if msg.get("role") == "assistant" and msg.get("content")
-        ),
-        None,
-    )
-    final_message = last_assistant_text or f"Stopped after {values.get('stepCount', 0)} steps."
-
-    return WorkflowResponse(
-        threadId=thread_id,
-        status="done",
-        finalMessage=final_message,
-        history=history,
-        reusedProcedureCount=len(values.get("proceduralMemory", [])),
-    )
-
-
 @app.post("/workflow/start", response_model=WorkflowResponse)
 def start_workflow(req: StartWorkflowRequest) -> WorkflowResponse:
-    thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
-    initial_state = {
-        "tools": req.tools,
-        "installedApps": req.installedApps,
-        "messages": [{"role": "user", "content": req.command}],
-        "history": [],
-        "stepCount": 0,
-        "proceduralMemory": search_procedures(req.command),
-        "procedureScope": req.deviceId[:200] or "local",
-    }
-    logger.info("workflow_started thread=%s scope=%s command_length=%d reused=%d", thread_id, req.deviceId[:80], len(req.command), len(initial_state["proceduralMemory"]))
-    compiled_graph.invoke(initial_state, config=config)
-    return _format_response(thread_id)
+    response = start_thread(req.command, req.tools, req.installedApps, req.deviceId)
+    logger.info(
+        "workflow_started thread=%s scope=%s command_length=%d",
+        response.threadId, req.deviceId[:80], len(req.command),
+    )
+    return response
 
 
 @app.post("/workflow/{thread_id}/resume", response_model=WorkflowResponse)
 def resume_workflow(thread_id: str, req: ResumeWorkflowRequest) -> WorkflowResponse:
-    config = {"configurable": {"thread_id": thread_id}}
-    snapshot = compiled_graph.get_state(config)
-    if not snapshot.next:
-        raise HTTPException(404, f"No workflow awaiting resume for thread {thread_id}.")
-
     logger.info("workflow_resumed thread=%s result_type=%s", thread_id, type(req.result).__name__)
-    compiled_graph.invoke(Command(resume=req.result), config=config)
-    return _format_response(thread_id)
+    response = resume_thread(thread_id, req.result)
+    # If a GPT-Live-1 delegation bridge (live_voice.py) is waiting on this thread for a
+    # phone-executed tool result, this HTTP resume (from the phone, after it ran the tool -
+    # same call the plain text flow already makes) is exactly what it's waiting for. Wake it
+    # so it can keep driving the live conversation. No-op for the plain text flow.
+    resolve_pending_resume(thread_id, response)
+    return response
+
+
+@app.websocket("/live/ws")
+async def live_voice_ws(websocket: WebSocket) -> None:
+    """Full-duplex audio bridge between the phone and a GPT-Live-1 session.
+
+    Relays mic/speaker audio in both directions and, on delegation, drives the same
+    start_thread/resume_thread functions the plain /workflow/* routes use above -
+    see live_voice.py for the bridge implementation.
+    """
+    await websocket.accept()
+    bridge = LiveVoiceBridge(websocket)
+    try:
+        await bridge.run()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("live_voice_ws_error")
+    finally:
+        await bridge.close()
 
 
 @app.post("/workflow/{thread_id}/complete")
@@ -441,7 +391,7 @@ def complete_workflow(thread_id: str, req: WorkflowFinalizeRequest = WorkflowFin
         outcome = req.outcome if req.outcome in {"succeeded", "failed", "cancelled", "rolled_back"} else "succeeded"
         save_procedure(intent, history, success=outcome == "succeeded", scope=values.get("procedureScope", "local"), outcome=outcome)
         logger.info("workflow_completed thread=%s outcome=%s steps=%d", thread_id, outcome, len(history))
-    return _format_response(thread_id)
+    return format_response(thread_id)
 
 
 class SearchRequest(BaseModel):

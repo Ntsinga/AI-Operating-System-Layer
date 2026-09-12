@@ -14,6 +14,10 @@
   <uses-permission android:name="android.permission.CALL_PHONE"/>
   <uses-permission android:name="android.permission.CAMERA"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <!-- Needed to route audio as VOICE_COMMUNICATION and enable echo cancellation for the
+       full-duplex GPT-Live-1 session (LiveVoiceModule.kt) - mic and speaker are both open
+       at once there, unlike every other recording path in this app. -->
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
   <uses-permission android:name="android.permission.SET_WALLPAPER"/>
   <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions"/>
   <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>

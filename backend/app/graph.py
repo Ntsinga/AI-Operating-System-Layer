@@ -23,14 +23,19 @@ MAX_STEPS is hit (safety cap) or the client simply stops calling resume
 
 import json
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, TypedDict
 
+from fastapi import HTTPException
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 from openai import OpenAI
+from pydantic import BaseModel
+
+from app.procedural_memory import search_procedures
 
 MAX_STEPS = 12
 OPENAI_MODEL = "gpt-4o-mini"
@@ -184,3 +189,105 @@ def build_graph():
 
 
 compiled_graph = build_graph()
+
+
+class WorkflowResponse(BaseModel):
+    threadId: str
+    status: str  # "awaiting_confirmation" | "awaiting_reply" | "done"
+    proposedTool: Optional[dict[str, Any]] = None
+    message: Optional[str] = None
+    finalMessage: Optional[str] = None
+    history: Optional[list[dict[str, Any]]] = None
+    reusedProcedureCount: int = 0
+
+
+# --- Thin, reusable driving functions ---------------------------------------
+#
+# start_thread/resume_thread/format_response are the single source of truth for
+# running compiled_graph. Both the plain HTTP /workflow/* routes (main.py, typed
+# or wake-word-transcribed commands) and the GPT-Live-1 delegation bridge
+# (live_voice.py, spoken commands) call these same functions rather than each
+# re-implementing the invoke/interrupt/resume dance - see docs/... "GPT-Live-1 as
+# the voice layer" plan for why the live-voice path needs to share this exactly.
+
+
+def format_response(thread_id: str) -> WorkflowResponse:
+    config = {"configurable": {"thread_id": thread_id}}
+    snapshot = compiled_graph.get_state(config)
+
+    if snapshot.next:
+        task = snapshot.tasks[0]
+        if not task.interrupts:
+            raise HTTPException(500, "Graph paused with no interrupt payload.")
+        interrupt_value = task.interrupts[0].value
+        kind = interrupt_value.get("kind")
+
+        if kind == "tool_call":
+            return WorkflowResponse(
+                threadId=thread_id,
+                status="awaiting_confirmation",
+                proposedTool=interrupt_value["proposedTool"],
+                history=snapshot.values.get("history", []),
+                reusedProcedureCount=len(snapshot.values.get("proceduralMemory", [])),
+            )
+        if kind == "awaiting_reply":
+            return WorkflowResponse(
+                threadId=thread_id,
+                status="awaiting_reply",
+                message=interrupt_value["message"],
+                history=snapshot.values.get("history", []),
+                reusedProcedureCount=len(snapshot.values.get("proceduralMemory", [])),
+            )
+        raise HTTPException(500, f"Unknown interrupt kind: {kind!r}")
+
+    # Graph truly ended - only happens by hitting MAX_STEPS (safety cap).
+    values = snapshot.values
+    history = values.get("history", [])
+    last_assistant_text = next(
+        (
+            msg["content"]
+            for msg in reversed(values.get("messages", []))
+            if msg.get("role") == "assistant" and msg.get("content")
+        ),
+        None,
+    )
+    final_message = last_assistant_text or f"Stopped after {values.get('stepCount', 0)} steps."
+
+    return WorkflowResponse(
+        threadId=thread_id,
+        status="done",
+        finalMessage=final_message,
+        history=history,
+        reusedProcedureCount=len(values.get("proceduralMemory", [])),
+    )
+
+
+def start_thread(
+    command: str,
+    tools: list[dict[str, Any]],
+    installed_apps: Optional[list[dict[str, Any]]] = None,
+    device_id: str = "local",
+) -> WorkflowResponse:
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    initial_state = {
+        "tools": tools,
+        "installedApps": installed_apps,
+        "messages": [{"role": "user", "content": command}],
+        "history": [],
+        "stepCount": 0,
+        "proceduralMemory": search_procedures(command),
+        "procedureScope": device_id[:200] or "local",
+    }
+    compiled_graph.invoke(initial_state, config=config)
+    return format_response(thread_id)
+
+
+def resume_thread(thread_id: str, result: Any) -> WorkflowResponse:
+    config = {"configurable": {"thread_id": thread_id}}
+    snapshot = compiled_graph.get_state(config)
+    if not snapshot.next:
+        raise HTTPException(404, f"No workflow awaiting resume for thread {thread_id}.")
+
+    compiled_graph.invoke(Command(resume=result), config=config)
+    return format_response(thread_id)

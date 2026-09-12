@@ -12,12 +12,20 @@ import { colors } from './src/theme';
 export default function App() {
   const [tab, setTab] = useState<TabKey>('chat');
   const [voiceCommand, setVoiceCommand] = useState<string | null>(null);
+  const [liveVoiceRequested, setLiveVoiceRequested] = useState(false);
 
   useEffect(() => {
     function commandFromUrl(url: string | null): string | null {
       if (!url) return null;
       const match = url.match(/[?&]command=([^&]*)/);
       return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : null;
+    }
+
+    // VoiceActivationService.kt's launchLiveVoice() deep-links here (aios://voice?live=1)
+    // after "Hey Casper" instead of the old one-shot SpeechRecognizer command - see
+    // WorkflowCard.tsx's liveVoiceRequested prop.
+    function isLiveVoiceUrl(url: string | null): boolean {
+      return !!url && /[?&]live=1(?:&|$)/.test(url);
     }
 
     // backend/app/main.py's /connect/google/callback redirects here (aios://google-connected)
@@ -40,6 +48,7 @@ export default function App() {
       if (handleGoogleConnectedUrl(url)) return;
       const command = commandFromUrl(url);
       if (command) setVoiceCommand(command);
+      else if (isLiveVoiceUrl(url)) setLiveVoiceRequested(true);
     });
 
     const subscription = Linking.addEventListener('url', ({ url }) => {
@@ -48,6 +57,9 @@ export default function App() {
       if (command) {
         setTab('chat');
         setVoiceCommand(command);
+      } else if (isLiveVoiceUrl(url)) {
+        setTab('chat');
+        setLiveVoiceRequested(true);
       }
     });
     return () => subscription.remove();
@@ -66,7 +78,18 @@ export default function App() {
           </View>
         </View>
 
-        <View style={styles.body}>{tab === 'chat' ? <ChatScreen voiceCommand={voiceCommand} onVoiceCommandConsumed={() => setVoiceCommand(null)} /> : <SettingsScreen />}</View>
+        <View style={styles.body}>
+          {tab === 'chat' ? (
+            <ChatScreen
+              voiceCommand={voiceCommand}
+              onVoiceCommandConsumed={() => setVoiceCommand(null)}
+              liveVoiceRequested={liveVoiceRequested}
+              onLiveVoiceRequestConsumed={() => setLiveVoiceRequested(false)}
+            />
+          ) : (
+            <SettingsScreen />
+          )}
+        </View>
 
         <BottomNav active={tab} onChange={setTab} />
       </View>
