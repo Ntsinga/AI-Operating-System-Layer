@@ -159,6 +159,10 @@ class LiveVoiceModule(private val reactContext: ReactApplicationContext) :
     when (payload.optString("type")) {
       "proposed_tool" -> emit("onProposedTool", Arguments.makeNativeMap(payload.toMap()))
       "caption" -> emit("onCaption", Arguments.makeNativeMap(payload.toMap()))
+      // An application-level error from GPT-Live-1 itself (bad billing, bad request,
+      // etc.) - see live_voice.py's _pump_openai_events(). Reuses the same onError event
+      // a connection failure would emit, since either way the session is effectively dead.
+      "error" -> emit("onError", Arguments.createMap().apply { putString("message", payload.optString("message")) })
       else -> Log.d(TAG, "Unhandled control message: ${payload.optString("type")}")
     }
   }

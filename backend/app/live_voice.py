@@ -19,10 +19,12 @@ confirmed from https://developers.openai.com/api/docs/guides/realtime-conversati
 (2026-09-12). Delegation event names (EVENT_DELEGATION_CREATED, EVENT_COMMENTARY_APPEND,
 etc.) are confirmed from https://developers.openai.com/api/docs/guides/live-delegation.
 
-WARNING - still unconfirmed against live docs (see the "GPT-Live-1 as the voice layer"
-plan's Risks section): the exact wss:// connection URL (LIVE_WS_URL) for a GPT-Live-1
-session specifically, since it wasn't surfaced by either fetch above. If connecting
-fails, that's the constant to check first.
+LIVE_WS_URL, the session-open event name/shape (session.start, not session.update - the
+API rejects it with "The first Live event must be session.start"), and the voice field's
+location (session.audio.output.voice, not session.voice - "Unknown parameter") are all
+confirmed live against the real API on 2026-09-12 (see the "GPT-Live-1 as the voice
+layer" plan's Risks section for how). At that point the only remaining error was
+credit_balance_exhausted, i.e. an account billing issue, not a code/schema problem.
 """
 
 import asyncio
@@ -58,7 +60,7 @@ LIVE_VOICE_INSTRUCTIONS = (
 )
 
 # --- Event type names -------------------------------------------------------
-EVENT_SESSION_UPDATE = "session.update"
+EVENT_SESSION_START = "session.start"  # NOT session.update - that's rejected as the first event
 EVENT_AUDIO_APPEND = "input_audio_buffer.append"  # phone mic -> OpenAI
 EVENT_AUDIO_DELTA = "response.output_audio.delta"  # OpenAI speech -> phone
 # Confirmed against https://developers.openai.com/api/docs/guides/realtime-conversations
@@ -117,10 +119,10 @@ class LiveVoiceBridge:
             LIVE_WS_URL, additional_headers={"Authorization": f"Bearer {api_key}"}
         )
         await self._send_openai_event(
-            EVENT_SESSION_UPDATE,
+            EVENT_SESSION_START,
             session={
                 "model": LIVE_VOICE_MODEL,
-                "voice": DEFAULT_VOICE,
+                "audio": {"output": {"voice": DEFAULT_VOICE}},
                 "delegation": {"type": "client"},
                 "instructions": LIVE_VOICE_INSTRUCTIONS,
             },
@@ -153,6 +155,14 @@ class LiveVoiceBridge:
                 audio_bytes = base64.b64decode(event.get("delta") or "")
                 if audio_bytes:
                     await self.phone_ws.send_bytes(audio_bytes)
+            elif event_type == "error":
+                # Found by hand while confirming the session.start fix against a real
+                # account: an application-level error (bad billing, bad request, etc.)
+                # otherwise vanished into a debug-level log line while the connection
+                # silently died a moment later - the phone side needs to hear about this.
+                message = event.get("error", {}).get("message", "Unknown error from GPT-Live-1.")
+                logger.error("live_voice_openai_error thread=%s message=%s", self.thread_id, message)
+                await self._send_control({"type": "error", "message": message})
             elif event_type == EVENT_INPUT_TRANSCRIPT_DELTA:
                 self._transcript_buffer += event.get("delta", "")
             elif event_type == EVENT_DELEGATION_CREATED:

@@ -15,7 +15,6 @@ import { getBriefStore } from '../native/BriefStore';
 import type { ProposedToolEvent } from '../native/LiveVoice';
 import { GradientButton } from './GradientButton';
 import { LiveVoiceButton } from './LiveVoiceButton';
-import { VoiceInputButton } from './VoiceInputButton';
 
 type Phase = 'idle' | 'starting' | 'awaiting_confirmation' | 'awaiting_reply' | 'running' | 'done';
 
@@ -44,20 +43,10 @@ export function WorkflowCard({
   const [completedSteps, setCompletedSteps] = useState<ToolCallRecord[]>([]);
   const [finalMessage, setFinalMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [transcribedNotice, setTranscribedNotice] = useState<string | null>(null);
   const [reusedProcedureCount, setReusedProcedureCount] = useState(0);
   const lastAutoStartedCommand = useRef<string | null>(null);
 
-  function handleTranscribed(text: string) {
-    setError(null);
-    setTranscribedNotice(text.trim() ? `Heard: "${text.trim()}"` : 'Heard nothing - try again.');
-    if (text.trim()) {
-      setCommand(text);
-    }
-  }
-
   function handleVoiceError(message: string) {
-    setTranscribedNotice(null);
     setReusedProcedureCount(0);
     setError(message);
   }
@@ -86,7 +75,6 @@ export function WorkflowCard({
     setCompletedSteps([]);
     setFinalMessage(null);
     setReplyText('');
-    setTranscribedNotice(null);
   }
 
   function applyResponse(response: WorkflowResponse) {
@@ -251,13 +239,9 @@ export function WorkflowCard({
           placeholder="e.g. find me 5 fitness apps, I'll pick one"
           placeholderTextColor={colors.textMuted}
           value={command}
-          onChangeText={(text) => {
-            setCommand(text);
-            setTranscribedNotice(null);
-          }}
+          onChangeText={setCommand}
           editable={phase === 'idle'}
         />
-        <VoiceInputButton onTranscribed={handleTranscribed} onError={handleVoiceError} />
         <LiveVoiceButton
           onProposedTool={handleLiveProposedTool}
           onError={handleVoiceError}
@@ -265,8 +249,6 @@ export function WorkflowCard({
           onAutoStartConsumed={onLiveVoiceRequestConsumed}
         />
       </View>
-
-      {transcribedNotice ? <Text style={styles.transcribedNotice}>{transcribedNotice}</Text> : null}
 
       <GradientButton
         label={phase === 'starting' ? 'Starting...' : 'Run'}
@@ -426,13 +408,6 @@ const styles = StyleSheet.create({
   },
   inputWithButton: {
     flex: 1,
-  },
-  transcribedNotice: {
-    color: colors.accent,
-    fontSize: 13,
-    fontStyle: 'italic',
-    marginBottom: 12,
-    marginTop: -6,
   },
   buttonPressed: {
     transform: [{ scale: 0.99 }],

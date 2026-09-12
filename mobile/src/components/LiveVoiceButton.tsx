@@ -51,9 +51,8 @@ export function LiveVoiceButton({ onProposedTool, onError, autoStart, onAutoStar
         onError?.(event.message);
       },
     });
-    // onProposedTool/onError are expected to be stable callbacks from the parent (as
-    // VoiceInputButton's onTranscribed/onError already are) - resubscribing on every
-    // parent render would drop events mid-flight.
+    // onProposedTool/onError are expected to be stable callbacks from the parent -
+    // resubscribing on every parent render would drop events mid-flight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
