@@ -79,6 +79,12 @@ class ValidateDecisionGuardTests(unittest.TestCase):
         result = _validate_decision(decision, [_element(0)])
         self.assertEqual(result["action"], "abort")
 
+    def test_rejects_valid_json_that_is_not_an_object(self):
+        # Open-weight models in json_object mode can return e.g. a bare list or string.
+        for decision in ([], "select_element", 3, None):
+            result = _validate_decision(decision, [_element(0)])
+            self.assertEqual(result["action"], "abort")
+
     def test_retry_and_abort_pass_through_without_needing_an_index(self):
         for action in ("retry", "abort"):
             decision = {"action": action, "elementIndex": None, "reason": "reason"}

@@ -42,6 +42,7 @@ import java.util.Locale
 const val EXTRA_RESULT_URI = "resultUri"
 const val EXTRA_ERROR_MESSAGE = "errorMessage"
 const val EXTRA_CAPTURE_MODE = "captureMode"
+const val EXTRA_USE_FRONT_CAMERA = "useFrontCamera"
 const val CAPTURE_MODE_PHOTO = "photo"
 const val CAPTURE_MODE_VIDEO = "video"
 
@@ -149,6 +150,17 @@ class InAppCaptureActivity : AppCompatActivity() {
 
         cameraProvider.unbindAll()
 
+        // Selfies (MediaCaptureModule.takeSelfie) ask for the front camera; everything else keeps
+        // the back camera. A device with no front camera fails here with a clear message rather
+        // than an opaque CameraX exception.
+        val selector =
+          if (intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, false)) CameraSelector.DEFAULT_FRONT_CAMERA
+          else CameraSelector.DEFAULT_BACK_CAMERA
+        if (!cameraProvider.hasCamera(selector)) {
+          finishWithError("This device has no camera for the requested mode.")
+          return@addListener
+        }
+
         if (isVideoMode()) {
           // Quality.HIGHEST (not a fixed value like SD/HD) lets CameraX resolve to whatever
           // the actual camera supports - a fixed quality can be unsupported on some devices,
@@ -156,12 +168,12 @@ class InAppCaptureActivity : AppCompatActivity() {
           val recorder = Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HIGHEST)).build()
           val capture = VideoCapture.withOutput(recorder)
           videoCapture = capture
-          cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+          cameraProvider.bindToLifecycle(this, selector, preview, capture)
           startVideoRecording()
         } else {
           val capture = ImageCapture.Builder().build()
           imageCapture = capture
-          cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+          cameraProvider.bindToLifecycle(this, selector, preview, capture)
           runPhotoCountdown(PHOTO_COUNTDOWN_SECONDS)
         }
       } catch (error: Exception) {

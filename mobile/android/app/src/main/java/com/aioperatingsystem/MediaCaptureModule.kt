@@ -36,6 +36,14 @@ class MediaCaptureModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  // Same 3-second countdown photo as takePhoto, but on the front camera.
+  @ReactMethod
+  fun takeSelfie(promise: Promise) {
+    PermissionHelper.requestPermission(reactContext, Manifest.permission.CAMERA, promise) {
+      startCapture(CAPTURE_MODE_PHOTO, REQUEST_CODE_IMAGE_CAPTURE, promise, useFrontCamera = true)
+    }
+  }
+
   @ReactMethod
   fun recordVideo(promise: Promise) {
     PermissionHelper.requestPermission(reactContext, Manifest.permission.CAMERA, promise) {
@@ -45,7 +53,7 @@ class MediaCaptureModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun startCapture(mode: String, requestCode: Int, promise: Promise) {
+  private fun startCapture(mode: String, requestCode: Int, promise: Promise, useFrontCamera: Boolean = false) {
     val activity = reactContext.currentActivity
     if (activity == null) {
       promise.reject("MEDIA_CAPTURE_ACTIVITY_UNAVAILABLE", "No foreground activity available to start capture.")
@@ -62,6 +70,7 @@ class MediaCaptureModule(private val reactContext: ReactApplicationContext) :
 
     val intent = Intent(activity, InAppCaptureActivity::class.java).apply {
       putExtra(EXTRA_CAPTURE_MODE, mode)
+      putExtra(EXTRA_USE_FRONT_CAMERA, useFrontCamera)
     }
     activity.startActivityForResult(intent, requestCode)
   }

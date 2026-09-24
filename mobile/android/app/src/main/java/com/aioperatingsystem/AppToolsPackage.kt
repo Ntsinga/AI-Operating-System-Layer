@@ -23,6 +23,7 @@ class AppToolsPackage : ReactPackage {
     LiveVoiceModule(reactContext),
     WallpaperModule(reactContext),
     BrowserModule(reactContext),
+    BoardModule(reactContext),
     StorageInfoModule(reactContext),
     NetworkInfoModule(reactContext),
     NetworkActionsModule(reactContext),
@@ -38,7 +39,8 @@ class AppToolsPackage : ReactPackage {
     BriefStoreModule(reactContext),
     SmsInboxModule(reactContext),
     LearningWatcherModule(reactContext),
-    ExpenseStoreModule(reactContext)
+    ExpenseStoreModule(reactContext),
+    PrefsModule(reactContext)
   )
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()

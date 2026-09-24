@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Board</title>
+<style>
+  /* Tokens mirror mobile/DESIGN.md / src/theme.ts so the board matches the rest of AI-OS. */
+  :root{
+    --bg:#080b14; --board:#0b1020; --surface:#0f1524; --surface-alt:#131a2c;
+    --border:#1e2740; --border-strong:#2c3860;
+    --text:#eef2fb; --text-2:#9aa4bd; --text-muted:#5e6885;
+    --accent:#4f7cf6; --accent-purple:#8b5cf6; --danger:#f4736a;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:system-ui,Roboto,"Segoe UI",sans-serif;overscroll-behavior:none;}
+  body{display:flex;flex-direction:column;}
+  .hd{display:flex;align-items:center;gap:8px;padding:10px 12px;flex:none;}
+  .hd .title{flex:1;min-width:0;}
+  .hd .title b{display:block;font-size:15px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .hd .title span{display:block;font-size:11px;color:var(--text-2);margin-top:1px;}
+  .iconbtn{width:44px;height:44px;border-radius:12px;border:none;background:transparent;color:var(--text-2);
+    font-size:22px;display:flex;align-items:center;justify-content:center;}
+  .iconbtn:active{background:var(--surface-alt);}
+  #wrap{flex:1;position:relative;margin:0 10px;border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--board);}
+  #canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block;}
+  #answer{position:absolute;left:10px;right:10px;bottom:10px;background:var(--surface);border:1px solid var(--border-strong);
+    border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.45;color:var(--text);max-height:45%;overflow:auto;display:none;}
+  #answer .who{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:6px;}
+  #answer.err .who{color:var(--danger);}
+  #answer .close{position:absolute;top:6px;right:6px;}
+  .dock{flex:none;padding:10px 12px calc(12px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:8px;}
+  .tools{display:flex;justify-content:space-between;gap:6px;}
+  .tool{flex:1;height:46px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text-2);
+    font-size:20px;display:flex;align-items:center;justify-content:center;}
+  .tool.sel{background:var(--surface-alt);border-color:var(--accent);color:var(--text);}
+  .tool:active{opacity:.85;}
+  .ask{display:flex;align-items:center;gap:8px;background:var(--surface-alt);border:1px solid var(--border-strong);
+    border-radius:26px;padding:5px 5px 5px 14px;min-height:52px;}
+  .ask .spark{color:var(--accent-purple);font-size:18px;flex:none;}
+  #q{flex:1;border:none;background:transparent;color:var(--text);font-size:15px;outline:none;min-width:0;}
+  #q::placeholder{color:var(--text-2);}
+  #send{width:44px;height:44px;border-radius:22px;border:none;background:var(--accent);color:#fff;font-size:20px;flex:none;
+    display:flex;align-items:center;justify-content:center;}
+  #send:disabled{opacity:.5;}
+  .spin{width:20px;height:20px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .save{position:absolute;top:10px;right:12px;font-size:11px;color:var(--text-muted);}
+</style>
+</head>
+<body>
+  <div class="hd">
+    <button class="iconbtn" id="back" aria-label="Back">&#8592;</button>
+    <div class="title"><b id="title">Board</b><span id="sub">Saved</span></div>
+    <button class="iconbtn" id="clear" aria-label="Clear board">&#128465;</button>
+  </div>
+
+  <div id="wrap">
+    <canvas id="canvas"></canvas>
+    <div class="save" id="savestate"></div>
+    <div id="answer"><button class="iconbtn close" id="answerclose" aria-label="Dismiss">&#10005;</button><div class="who" id="answerwho">AI-OS</div><div id="answertext"></div></div>
+  </div>
+
+  <div class="dock">
+    <div class="tools">
+      <button class="tool sel" data-tool="pen" aria-label="Pen">&#9998;</button>
+      <button class="tool" data-tool="eraser" aria-label="Eraser">&#9723;</button>
+      <button class="tool" data-tool="lasso" aria-label="Select a region">&#11046;</button>
+      <button class="tool" id="undo" aria-label="Undo">&#8630;</button>
+    </div>
+    <div class="ask">
+      <span class="spark">&#10022;</span>
+      <input id="q" type="text" placeholder="Ask about your drawing" enterkeyhint="send" />
+      <button id="send" aria-label="Send">&#10148;</button>
+    </div>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var boardId = params.get("boardId") || "";
+  var backend = (params.get("backend") || "").replace(/\/+$/, "");
+  var titleText = params.get("title") || "Board";
+  document.getElementById("title").textContent = titleText;
+
+  var PEN_COLOR = "#eef2fb", PEN_WIDTH = 3, ERASER_WIDTH = 26;
+  var BOARD_BG = "#0b1020";
+
+  var canvas = document.getElementById("canvas");
+  var ctx = canvas.getContext("2d");
+  var dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  var cssW = 0, cssH = 0;
+
+  // scene.strokes: [{tool:'pen'|'eraser', color, width, points:[[x,y],...]}] in CSS px.
+  var scene = { version: 1, w: 0, h: 0, strokes: [] };
+  var selection = null;         // {x,y,w,h} from the lasso, or null
+  var tool = "pen";
+  var current = null;           // stroke being drawn
+  var lassoPts = null;          // points of an in-progress lasso
+
+  function resize(){
+    var r = canvas.getBoundingClientRect();
+    cssW = r.width; cssH = r.height;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    scene.w = Math.round(cssW); scene.h = Math.round(cssH);
+    redraw();
+  }
+
+  function drawStroke(s){
+    if (!s.points.length) return;
+    ctx.save();
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    if (s.tool === "eraser"){ ctx.globalCompositeOperation = "destination-out"; ctx.strokeStyle = "rgba(0,0,0,1)"; }
+    else { ctx.globalCompositeOperation = "source-over"; ctx.strokeStyle = s.color; }
+    ctx.lineWidth = s.width;
+    ctx.beginPath();
+    ctx.moveTo(s.points[0][0], s.points[0][1]);
+    for (var i=1;i<s.points.length;i++) ctx.lineTo(s.points[i][0], s.points[i][1]);
+    if (s.points.length === 1) ctx.lineTo(s.points[0][0]+0.1, s.points[0][1]+0.1);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function redraw(){
+    ctx.save();
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = BOARD_BG;
+    ctx.fillRect(0,0,cssW,cssH);
+    for (var i=0;i<scene.strokes.length;i++) drawStroke(scene.strokes[i]);
+    if (selection){
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = "#f5b740"; ctx.setLineDash([6,5]); ctx.lineWidth = 2;
+      ctx.strokeRect(selection.x, selection.y, selection.w, selection.h);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function pt(e){
+    var r = canvas.getBoundingClientRect();
+    return [ (e.clientX - r.left), (e.clientY - r.top) ];
+  }
+
+  canvas.addEventListener("pointerdown", function(e){
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    var p = pt(e);
+    if (tool === "lasso"){ lassoPts = [p]; selection = null; redraw(); return; }
+    current = { tool: tool, color: PEN_COLOR, width: tool === "eraser" ? ERASER_WIDTH : PEN_WIDTH, points: [p] };
+  }, {passive:false});
+
+  canvas.addEventListener("pointermove", function(e){
+    if (!current && !lassoPts) return;
+    e.preventDefault();
+    var events = (e.getCoalescedEvents && e.getCoalescedEvents()) || [e];
+    for (var i=0;i<events.length;i++){
+      var p = pt(events[i]);
+      if (lassoPts){ lassoPts.push(p); }
+      else { current.points.push(p); }
+    }
+    if (lassoPts){
+      redraw();
+      ctx.save(); ctx.setTransform(dpr,0,0,dpr,0,0);
+      ctx.strokeStyle = "#f5b740"; ctx.setLineDash([5,4]); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(lassoPts[0][0], lassoPts[0][1]);
+      for (var j=1;j<lassoPts.length;j++) ctx.lineTo(lassoPts[j][0], lassoPts[j][1]);
+      ctx.stroke(); ctx.restore();
+    } else {
+      // Incremental draw of just the new segment for responsiveness.
+      ctx.save(); ctx.setTransform(dpr,0,0,dpr,0,0);
+      drawStroke({ tool: current.tool, color: current.color, width: current.width,
+        points: current.points.slice(Math.max(0, current.points.length-2)) });
+      ctx.restore();
+    }
+  }, {passive:false});
+
+  function endStroke(e){
+    if (lassoPts){
+      if (lassoPts.length > 2){
+        var xs = lassoPts.map(function(p){return p[0];}), ys = lassoPts.map(function(p){return p[1];});
+        var x = Math.min.apply(null,xs), y = Math.min.apply(null,ys);
+        var w = Math.max.apply(null,xs)-x, h = Math.max.apply(null,ys)-y;
+        selection = (w>6 && h>6) ? {x:Math.round(x),y:Math.round(y),w:Math.round(w),h:Math.round(h)} : null;
+        if (selection) document.getElementById("q").placeholder = "Ask about the selected part";
+      }
+      lassoPts = null; redraw(); return;
+    }
+    if (!current) return;
+    scene.strokes.push(current);
+    current = null;
+    redraw();
+    scheduleSave();
+  }
+  canvas.addEventListener("pointerup", endStroke);
+  canvas.addEventListener("pointercancel", endStroke);
+
+  // --- tools ---
+  var toolButtons = document.querySelectorAll(".tool[data-tool]");
+  toolButtons.forEach(function(btn){
+    btn.addEventListener("click", function(){
+      tool = btn.getAttribute("data-tool");
+      toolButtons.forEach(function(b){ b.classList.toggle("sel", b === btn); });
+      if (tool !== "lasso" && selection){ selection = null; document.getElementById("q").placeholder = "Ask about your drawing"; redraw(); }
+    });
+  });
+  document.getElementById("undo").addEventListener("click", function(){
+    if (scene.strokes.length){ scene.strokes.pop(); redraw(); scheduleSave(); }
+  });
+  document.getElementById("clear").addEventListener("click", function(){
+    if (!scene.strokes.length) return;
+    if (confirm("Clear the whole board?")){ scene.strokes = []; selection = null; redraw(); scheduleSave(); }
+  });
+  document.getElementById("back").addEventListener("click", function(){
+    flush(); if (window.AIOSBoard && AIOSBoard.close) AIOSBoard.close();
+  });
+  document.getElementById("answerclose").addEventListener("click", function(){
+    document.getElementById("answer").style.display = "none";
+  });
+
+  // --- thumbnail + snapshot ---
+  function thumbDataUri(){
+    var tw = 140, th = Math.max(1, Math.round(tw * (cssH / (cssW||1))));
+    var off = document.createElement("canvas"); off.width = tw; off.height = th;
+    var o = off.getContext("2d"); o.fillStyle = BOARD_BG; o.fillRect(0,0,tw,th);
+    o.drawImage(canvas, 0,0,tw,th);
+    try { return off.toDataURL("image/png"); } catch(e){ return ""; }
+  }
+  function snapshotDataUri(){
+    try { return canvas.toDataURL("image/png"); } catch(e){ return ""; }
+  }
+
+  // --- persistence (direct to backend; CORS is open) ---
+  var saveTimer = null, saving = false, dirty = false;
+  function setSaveState(t){ document.getElementById("savestate").textContent = t; }
+  function scheduleSave(){ dirty = true; if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(save, 900); }
+  function save(){
+    if (!boardId || !backend){ return; }
+    if (saving){ scheduleSave(); return; }
+    saving = true; dirty = false; setSaveState("Saving…");
+    fetch(backend + "/boards/" + boardId, {
+      method:"PUT", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ scene: scene, thumb: thumbDataUri() })
+    }).then(function(r){ setSaveState(r.ok ? "Saved" : "Save failed"); })
+      .catch(function(){ setSaveState("Offline"); })
+      .finally(function(){ saving = false; if (dirty) scheduleSave(); });
+  }
+  function flush(){ if (dirty) { if (saveTimer) clearTimeout(saveTimer); save(); } }
+  window.addEventListener("pagehide", flush);
+  document.addEventListener("visibilitychange", function(){ if (document.visibilityState === "hidden") flush(); });
+
+  function loadScene(){
+    if (!boardId || !backend) return;
+    fetch(backend + "/boards/" + boardId).then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(data){
+        if (data && data.scene && Array.isArray(data.scene.strokes)){ scene = data.scene; if (!scene.version) scene.version = 1; }
+        if (data && data.title){ document.getElementById("title").textContent = data.title; }
+        redraw();
+      }).catch(function(){ /* offline: start with an empty board */ });
+  }
+
+  // --- ask ---
+  var q = document.getElementById("q"), send = document.getElementById("send");
+  function showAnswer(text, isErr){
+    var box = document.getElementById("answer");
+    document.getElementById("answerwho").textContent = isErr ? "Couldn't answer" : "AI-OS";
+    document.getElementById("answertext").textContent = text;
+    box.classList.toggle("err", !!isErr);
+    box.style.display = "block";
+  }
+  function ask(){
+    var question = q.value.trim();
+    if (!question) return;
+    if (!boardId || !backend){ showAnswer("This board isn't connected to the backend.", true); return; }
+    var img = snapshotDataUri();
+    if (!img){ showAnswer("Couldn't capture the drawing.", true); return; }
+    send.disabled = true; send.innerHTML = '<span class="spin"></span>';
+    flush();
+    fetch(backend + "/boards/" + boardId + "/ask", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ question: question, snapshot: img, selection: selection })
+    }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+      .then(function(res){
+        if (res.ok && res.d && res.d.answer){ showAnswer(res.d.answer, false); q.value = ""; }
+        else { showAnswer((res.d && res.d.detail) || "The AI couldn't answer that.", true); }
+      })
+      .catch(function(){ showAnswer("Couldn't reach the AI. Check your connection.", true); })
+      .finally(function(){ send.disabled = false; send.innerHTML = "&#10148;"; });
+  }
+  send.addEventListener("click", ask);
+  q.addEventListener("keydown", function(e){ if (e.key === "Enter"){ e.preventDefault(); ask(); } });
+
+  window.addEventListener("resize", resize);
+  resize();
+  loadScene();
+})();
+</script>
+</body>
+</html>

@@ -41,6 +41,10 @@ export const colors = {
   infoBorder: '#23406a',
 } as const;
 
+// Ergonomics (see ../DESIGN.md): every tappable target is at least this many dp, and the controls
+// a user touches live in the lower half of the screen.
+export const touchTarget = 48;
+
 // Blue -> purple gradient used for the primary action buttons and brand marks.
 export const brandGradient = [colors.accent, colors.accentPurple] as const;
 

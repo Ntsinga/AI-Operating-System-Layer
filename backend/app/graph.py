@@ -22,7 +22,6 @@ MAX_STEPS is hit (safety cap) or the client simply stops calling resume
 """
 
 import json
-import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -32,13 +31,12 @@ from fastapi import HTTPException
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
-from openai import OpenAI
 from pydantic import BaseModel
 
+from app import llm
 from app.procedural_memory import search_procedures
 
 MAX_STEPS = 12
-OPENAI_MODEL = "gpt-4o-mini"
 _CONTEXT_DIR = Path(__file__).parent / "context"
 
 
@@ -66,13 +64,6 @@ class WorkflowState(TypedDict):
     stepCount: int
     proceduralMemory: List[dict[str, Any]]
     procedureScope: str
-
-
-def _client() -> OpenAI:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set. Add it to backend/.env.")
-    return OpenAI(api_key=api_key)
 
 
 def _build_system_prompt(state: WorkflowState) -> str:
@@ -109,22 +100,14 @@ def _build_system_prompt(state: WorkflowState) -> str:
 
 
 def planner_node(state: WorkflowState) -> dict[str, Any]:
-    client = _client()
-
     # Real assistant tool_calls + tool-result messages, not a prose summary in the
     # system prompt. Cheap models (gpt-4o-mini) do not reliably track "already did
     # this" from a text description - they need the actual multi-turn function-calling
     # protocol. See ERROR_LOG.md (2026-07-19, workflow stuck repeating a tool call).
     full_messages = [{"role": "system", "content": _build_system_prompt(state)}] + state["messages"]
 
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=full_messages,
-        tools=state["tools"],
-        tool_choice="auto",
-    )
-
-    choice = response.choices[0].message
+    # Routed per task (LLM_PROVIDER_PLANNER) so open-weight models can be tried here; see llm.py.
+    choice = llm.chat("planner", full_messages, tools=state["tools"]).message
 
     if not choice.tool_calls:
         text = choice.content or "I don't have a next step - what would you like to do?"

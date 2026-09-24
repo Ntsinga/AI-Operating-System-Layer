@@ -1,5 +1,7 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useRef, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   resumeWorkflow,
@@ -9,11 +11,12 @@ import {
   type ToolCallRecord,
   type WorkflowResponse,
 } from '../planner/workflowClient';
-import { colors } from '../theme';
+import { brandGradient, colors, gradientEnd, gradientStart } from '../theme';
 import { getInstalledAppsTool, tools } from '../tools/registry';
 import { getBriefStore } from '../native/BriefStore';
 import type { ProposedToolEvent } from '../native/LiveVoice';
 import { GradientButton } from './GradientButton';
+import { SendIcon } from './HomeIcons';
 import { LiveVoiceButton } from './LiveVoiceButton';
 
 type Phase = 'idle' | 'starting' | 'awaiting_confirmation' | 'awaiting_reply' | 'running' | 'done';
@@ -26,16 +29,24 @@ type WorkflowCardProps = {
   // the command box, mirroring initialCommand's auto-start for typed/one-shot commands.
   liveVoiceRequested?: boolean;
   onLiveVoiceRequestConsumed?: () => void;
+  // Mirrors the composer's thumb-side buttons (mic, send) to the left - see HandednessCard.tsx.
+  leftHanded?: boolean;
+  // Bumped by the Home ask bar to bring the composer's keyboard up.
+  focusToken?: number;
 };
 
+// The chat surface inside ChatSheet: results scroll above, and the composer is docked at the
+// bottom (same spot as the Home ask bar) so a one-handed thumb reaches it.
 export function WorkflowCard({
   initialCommand,
   onInitialCommandConsumed,
   liveVoiceRequested,
   onLiveVoiceRequestConsumed,
+  leftHanded = false,
+  focusToken,
 }: WorkflowCardProps) {
   const [command, setCommand] = useState('');
-  const [replyText, setReplyText] = useState('');
+  const [dockedText, setDockedText] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
   const [threadId, setThreadId] = useState<string | null>(null);
   const [proposal, setProposal] = useState<ProposedToolCall | null>(null);
@@ -45,6 +56,8 @@ export function WorkflowCard({
   const [error, setError] = useState<string | null>(null);
   const [reusedProcedureCount, setReusedProcedureCount] = useState(0);
   const lastAutoStartedCommand = useRef<string | null>(null);
+  const inputRef = useRef<TextInput>(null);
+  const insets = useSafeAreaInsets();
 
   function handleVoiceError(message: string) {
     setReusedProcedureCount(0);
@@ -74,7 +87,6 @@ export function WorkflowCard({
     setAssistantMessage(null);
     setCompletedSteps([]);
     setFinalMessage(null);
-    setReplyText('');
   }
 
   function applyResponse(response: WorkflowResponse) {
@@ -131,12 +143,23 @@ export function WorkflowCard({
 
   useEffect(() => {
     const normalized = initialCommand?.trim();
-    if (normalized && normalized !== lastAutoStartedCommand.current) {
+    if (!normalized) {
+      // Cleared by the parent once consumed: forget it, so the same command (for example the
+      // same suggestion chip) can be run again later.
+      lastAutoStartedCommand.current = null;
+      return;
+    }
+    if (normalized !== lastAutoStartedCommand.current) {
       lastAutoStartedCommand.current = normalized;
       onInitialCommandConsumed?.();
       void handleStart(normalized);
     }
   }, [initialCommand, onInitialCommandConsumed]);
+
+  // Raised by the Home ask bar: bring the docked composer's keyboard up.
+  useEffect(() => {
+    if (focusToken) inputRef.current?.focus();
+  }, [focusToken]);
 
   async function executeProposal(proposalToRun: ProposedToolCall, workflowThreadId: string) {
     if (!proposalToRun || !workflowThreadId) {
@@ -172,22 +195,26 @@ export function WorkflowCard({
     }
   }
 
-  async function handleReply() {
-    if (!threadId || !replyText.trim()) {
+  // The docked composer serves both moments: a new command when idle (or after a finished run),
+  // and the answer to the assistant's question when it is waiting for a reply.
+  async function handleDockedSubmit() {
+    const text = dockedText.trim();
+    if (!text || isBusy || phase === 'awaiting_confirmation') return;
+    setDockedText('');
+
+    if (phase === 'awaiting_reply' && threadId) {
+      setPhase('running');
+      setError(null);
+      try {
+        applyResponse(await resumeWorkflow(threadId, text));
+      } catch (resumeError) {
+        setError(resumeError instanceof Error ? resumeError.message : 'Failed to send reply.');
+        setPhase('awaiting_reply');
+      }
       return;
     }
 
-    setPhase('running');
-    setError(null);
-
-    try {
-      const response = await resumeWorkflow(threadId, replyText.trim());
-      setReplyText('');
-      applyResponse(response);
-    } catch (resumeError) {
-      setError(resumeError instanceof Error ? resumeError.message : 'Failed to send reply.');
-      setPhase('awaiting_reply');
-    }
+    if (phase === 'idle' || phase === 'done') await handleStart(text);
   }
 
   async function handleImageChoice(imageUrl: string) {
@@ -226,36 +253,8 @@ export function WorkflowCard({
     | Array<{ imageUrl?: string; thumbnailUrl?: string; title?: string }>
     | undefined;
 
-  return (
-    <View style={styles.card}>
-      <View style={styles.info}>
-        <Text style={styles.name}>AI assistant</Text>
-        <Text style={styles.description}>Type or speak a command.</Text>
-      </View>
-
-      <View style={styles.inputRow}>
-        <TextInput
-          style={[styles.input, styles.inputWithButton]}
-          placeholder="e.g. find me 5 fitness apps, I'll pick one"
-          placeholderTextColor={colors.textMuted}
-          value={command}
-          onChangeText={setCommand}
-          editable={phase === 'idle'}
-        />
-        <LiveVoiceButton
-          onProposedTool={handleLiveProposedTool}
-          onError={handleVoiceError}
-          autoStart={liveVoiceRequested}
-          onAutoStartConsumed={onLiveVoiceRequestConsumed}
-        />
-      </View>
-
-      <GradientButton
-        label={phase === 'starting' ? 'Starting...' : 'Run'}
-        disabled={phase !== 'idle' || !command.trim()}
-        onPress={handleStart}
-      />
-
+  const results = (
+    <>
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {reusedProcedureCount > 0 ? (
@@ -331,21 +330,7 @@ export function WorkflowCard({
               ))}
             </View>
           ) : null}
-          <TextInput
-            style={styles.input}
-            placeholder="Type your reply..."
-            placeholderTextColor={colors.textMuted}
-            value={replyText}
-            onChangeText={setReplyText}
-            editable={phase === 'awaiting_reply'}
-          />
           <View style={styles.proposalActions}>
-            <GradientButton
-              label={phase === 'running' ? 'Sending...' : 'Send'}
-              disabled={isBusy || !replyText.trim()}
-              onPress={handleReply}
-              style={styles.flexButton}
-            />
             <Pressable
               accessibilityRole="button"
               disabled={isBusy}
@@ -366,48 +351,146 @@ export function WorkflowCard({
           </Text>
         </View>
       ) : null}
+    </>
+  );
+
+  const canSubmit = !isBusy && phase !== 'awaiting_confirmation' && dockedText.trim().length > 0;
+
+  return (
+    <View style={styles.root}>
+      <ScrollView
+        style={styles.thread}
+        contentContainerStyle={styles.threadContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+      >
+        {command && (phase !== 'idle' || error) ? (
+          <View style={styles.userBubble}>
+            <Text style={styles.userBubbleText}>{command}</Text>
+          </View>
+        ) : phase === 'idle' && !error ? (
+          <Text style={styles.emptyHint}>Ask for something, or tap the mic to talk.</Text>
+        ) : null}
+        {results}
+      </ScrollView>
+
+      <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View style={[styles.composerBar, leftHanded && styles.composerBarLeft]}>
+          <TextInput
+            ref={inputRef}
+            style={styles.composerInput}
+            placeholder={phase === 'awaiting_reply' ? 'Type your reply...' : 'Ask or say anything'}
+            placeholderTextColor={colors.textMuted}
+            value={dockedText}
+            onChangeText={setDockedText}
+            editable={!isBusy && phase !== 'awaiting_confirmation'}
+            returnKeyType="send"
+            submitBehavior="submit"
+            onSubmitEditing={() => void handleDockedSubmit()}
+          />
+          <LiveVoiceButton
+            compact
+            bubbleAlign={leftHanded ? 'left' : 'right'}
+            onProposedTool={handleLiveProposedTool}
+            onError={handleVoiceError}
+            autoStart={liveVoiceRequested}
+            onAutoStartConsumed={onLiveVoiceRequestConsumed}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+            disabled={!canSubmit}
+            onPress={() => void handleDockedSubmit()}
+          >
+            {canSubmit ? (
+              <LinearGradient colors={brandGradient} start={gradientStart} end={gradientEnd} style={styles.sendCircle}>
+                <SendIcon color={colors.onAccent} size={18} />
+              </LinearGradient>
+            ) : (
+              <View style={[styles.sendCircle, styles.sendCircleDisabled]}>
+                <SendIcon color={colors.textMuted} size={18} />
+              </View>
+            )}
+          </Pressable>
+        </View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
+  root: {
     flex: 1,
+  },
+  thread: {
+    flex: 1,
+  },
+  threadContent: {
+    flexGrow: 1,
+    paddingBottom: 12,
+    paddingHorizontal: 16,
     paddingTop: 4,
   },
-  info: {
-    marginBottom: 14,
+  userBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: colors.infoBg,
+    borderBottomRightRadius: 4,
+    borderColor: colors.infoBorder,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 12,
+    maxWidth: '85%',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  name: {
-    color: colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: 0,
+  userBubbleText: {
+    color: colors.info,
+    fontSize: 15,
+    lineHeight: 21,
   },
-  description: {
+  emptyHint: {
     color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 19,
-    marginTop: 6,
+    marginBottom: 12,
   },
-  input: {
+  composer: {
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+  },
+  composerBar: {
+    alignItems: 'center',
     backgroundColor: colors.surfaceAlt,
     borderColor: colors.border,
-    borderRadius: 10,
+    borderRadius: 30,
     borderWidth: 1,
-    color: colors.textPrimary,
-    fontSize: 15,
-    marginBottom: 12,
-    minHeight: 46,
-    paddingHorizontal: 12,
-  },
-  inputRow: {
-    alignItems: 'flex-start',
     flexDirection: 'row',
     gap: 8,
+    padding: 4,
   },
-  inputWithButton: {
+  composerBarLeft: {
+    flexDirection: 'row-reverse',
+  },
+  composerInput: {
+    color: colors.textPrimary,
     flex: 1,
+    fontSize: 15,
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  sendCircle: {
+    alignItems: 'center',
+    borderRadius: 22,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  sendCircleDisabled: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
   },
   buttonPressed: {
     transform: [{ scale: 0.99 }],

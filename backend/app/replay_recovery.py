@@ -17,8 +17,9 @@ directly; it is never something the model itself can choose (kept out of VALID_A
 """
 
 import json
-import os
 from typing import Any
+
+from app import llm
 
 VALID_ACTIONS = {"select_element", "retry", "abort"}
 MAX_ASK_USER_CANDIDATES = 8
@@ -39,6 +40,9 @@ def _candidates_matching_typed_value(elements: list[dict[str, Any]], typed_value
 
 
 def _validate_decision(decision: dict[str, Any], elements: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(decision, dict):
+        # Providers without strict json_schema (open-weight models) can return valid JSON of the wrong shape.
+        return {"action": "abort", "elementIndex": None, "reason": "model returned a non-object recovery decision"}
     action = decision.get("action")
     element_index = decision.get("elementIndex")
     if action not in VALID_ACTIONS:
@@ -53,13 +57,6 @@ def _validate_decision(decision: dict[str, Any], elements: list[dict[str, Any]])
 
 
 def _ask_model(failed_selector: dict[str, Any], elements: list[dict[str, Any]], screen_title: str | None, intent: str | None) -> dict[str, Any]:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return {"action": "abort", "elementIndex": None, "reason": "no typed-value match and OPENAI_API_KEY not configured for fallback reasoning"}
-
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key)
     element_lines = "\n".join(
         f"{element['index']}: text={element.get('text')!r} resourceId={element.get('resourceId')!r} contentDescription={element.get('contentDescription')!r}"
         for element in elements
@@ -74,19 +71,18 @@ def _ask_model(failed_selector: dict[str, Any], elements: list[dict[str, Any]], 
         "only if you are confident. If multiple elements are plausible or none clearly match, "
         "you must choose abort - never guess between visually similar options."
     )
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=200,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a bounded UI-replay recovery assistant. You may only select an element by an index that is present in the provided list, or return retry/abort. Never invent an index, coordinate, or new element.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
+    try:
+        result = llm.chat(
+            "recovery",
+            [
+                {
+                    "role": "system",
+                    "content": "You are a bounded UI-replay recovery assistant. You may only select an element by an index that is present in the provided list, or return retry/abort. Never invent an index, coordinate, or new element.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=200,
+            json_schema={
                 "name": "replay_recovery_decision",
                 "schema": {
                     "type": "object",
@@ -100,10 +96,12 @@ def _ask_model(failed_selector: dict[str, Any], elements: list[dict[str, Any]], 
                 },
                 "strict": True,
             },
-        },
-    )
+        )
+    except llm.LLMError as error:
+        # Includes "no provider configured". Either way the caller promotes abort to ask_user.
+        return {"action": "abort", "elementIndex": None, "reason": f"no typed-value match and fallback reasoning unavailable: {error}"[:300]}
     try:
-        decision = json.loads(response.choices[0].message.content or "{}")
+        decision = json.loads(result.text or "{}")
     except json.JSONDecodeError:
         return {"action": "abort", "elementIndex": None, "reason": "model returned an unparsable recovery decision"}
     return _validate_decision(decision, elements)
@@ -146,8 +144,8 @@ def resolve_replay_recovery(
     decision = _ask_model(failed_selector, elements, screen_title, intent)
     if decision["action"] == "abort":
         # Still not a dead end: hand the real, currently visible elements to a human instead of
-        # silently failing the whole replay. Works even without OPENAI_API_KEY configured, since
-        # _ask_model's own "no key" fallback also lands here.
+        # silently failing the whole replay. Works even with no LLM provider configured, since
+        # _ask_model's own "unavailable" fallback also lands here.
         bounded = elements[:MAX_ASK_USER_CANDIDATES]
         return {
             "action": "ask_user",

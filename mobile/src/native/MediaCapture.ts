@@ -6,6 +6,8 @@ export type MediaCaptureResult = {
 
 type MediaCaptureNativeModule = {
   takePhoto: () => Promise<MediaCaptureResult>;
+  // Front-camera photo with the same countdown; absent on builds older than the launcher Home screen.
+  takeSelfie?: () => Promise<MediaCaptureResult>;
   recordVideo: () => Promise<MediaCaptureResult>;
 };
 

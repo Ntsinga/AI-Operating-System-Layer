@@ -1,5 +1,15 @@
 # AI-OS Progress
 
+## 2026-09-19 Multi-provider LLM routing (DeepSeek / open-weight)
+
+- New `backend/app/llm.py` routes every chat-completion call by task (`planner`, `analyze`, `recovery`, `vision`) across `openai`, `deepseek`, and a generic `openweight` OpenAI-compatible endpoint. Default is unchanged: OpenAI `gpt-4o-mini` for everything until `LLM_PROVIDER` / `LLM_PROVIDER_<TASK>` is set. Env vars are documented in `backend/.env.example`.
+- Recommended DeepSeek model for every task: `deepseek-flash` (cheapest; tools, JSON, image input, 1M context). `deepseek-v4-pro` is 2-4x the price with no vision - only use it as a per-task override (`LLM_MODEL_<TASK>`) if flash fails the planner test. `deepseek-chat`/`deepseek-reasoner` are retired (2026-07-24 per third-party sources; the official docs list only flash and v4-pro).
+- DeepSeek thinking mode is on by default and 400s on tool calls unless prior `reasoning_content` is passed back (the planner rebuilds messages statelessly), so `llm.py` sends `thinking: disabled` unless `DEEPSEEK_THINKING=1`.
+- Deliberately not a swap to DeepSeek: the app must stay multimodal. Vision requests are only ever routed to vision-capable providers: OpenAI, `deepseek-flash` (images in user messages only, JPEG/PNG/GIF/WebP), or an open-weight VLM with `OPEN_WEIGHT_VISION=1`. The only vision function in the backend is `receipt.extract_receipt` (task `vision`); set `LLM_PROVIDER_VISION=deepseek` to run it on DeepSeek. Transcription and GPT-Live-1 voice stay OpenAI-only (audio/realtime APIs).
+- Purpose is also to measure open-weight models: every call logs `llm_call task provider model ms prompt_tokens completion_tokens fell_back`. Set `LLM_FALLBACK=0` while comparing so a failure isn't masked by a retry on another provider.
+- Providers without strict `json_schema` (DeepSeek, open-weight) get `json_object` plus the schema in the prompt; `replay_recovery._validate_decision` still rejects any index not in the real element list and now also non-object output.
+- Not yet verified against a live DeepSeek key: multi-turn tool calling in the planner (see the 2026-07-19 stuck-tool-call entry in ERROR_LOG.md) needs a real run with `LLM_PROVIDER_PLANNER=deepseek LLM_FALLBACK=0` before it's trusted.
+
 ## 2026-07-28 Replay and Teaching Session
 
 - Investigated Uber lessons Ride 30 through Ride 33 using both logcat and the configured remote database. Do not infer procedure contents from logcat alone; query `scripts/query-semantic-actions.py` and inspect the ordered `procedures.steps_json` record.

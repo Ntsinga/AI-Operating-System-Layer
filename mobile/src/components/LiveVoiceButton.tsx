@@ -23,6 +23,10 @@ type Props = {
   // auto-start pattern for typed/wake-word text commands.
   autoStart?: boolean;
   onAutoStartConsumed?: () => void;
+  // Compact mode (the docked chat composer): the button keeps a fixed 46dp footprint and its status
+  // and captions float in a bubble above it instead of growing the row underneath it.
+  compact?: boolean;
+  bubbleAlign?: 'left' | 'right';
 };
 
 const MAX_VISIBLE_CAPTIONS = 4;
@@ -30,7 +34,14 @@ const MAX_VISIBLE_CAPTIONS = 4;
 // Full-duplex "talk to Casper" button: tap to start a live GPT-Live-1 session (backend/app/
 // live_voice.py), see live captions of both sides of the conversation, and stop it. Tool
 // proposals are handed up to the caller instead of executed here - see the Props comment.
-export function LiveVoiceButton({ onProposedTool, onError, autoStart, onAutoStartConsumed }: Props) {
+export function LiveVoiceButton({
+  onProposedTool,
+  onError,
+  autoStart,
+  onAutoStartConsumed,
+  compact = false,
+  bubbleAlign = 'right',
+}: Props) {
   const [active, setActive] = useState(false);
   const [starting, setStarting] = useState(false);
   const [captions, setCaptions] = useState<CaptionEvent[]>([]);
@@ -108,6 +119,25 @@ export function LiveVoiceButton({ onProposedTool, onError, autoStart, onAutoStar
 
   const icon = active ? '⏹' : starting ? '…' : '🎙';
   const statusText = active ? '● Live - tap to end' : starting ? 'Connecting...' : null;
+  const details = (
+    <>
+      {statusText ? <Text style={[styles.statusText, compact && styles.statusTextCompact]}>{statusText}</Text> : null}
+      {captions.length > 0 ? (
+        <View style={styles.captionsBox}>
+          {captions.map((caption, index) => (
+            <Text
+              key={index}
+              style={[styles.captionText, caption.speaker === 'user' ? styles.captionUser : styles.captionAssistant]}
+              numberOfLines={2}
+            >
+              {caption.speaker === 'user' ? 'You: ' : 'Casper: '}
+              {caption.text}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </>
+  );
 
   return (
     <View style={styles.container}>
@@ -125,21 +155,15 @@ export function LiveVoiceButton({ onProposedTool, onError, autoStart, onAutoStar
       >
         <Text style={styles.icon}>{icon}</Text>
       </Pressable>
-      {statusText ? <Text style={styles.statusText}>{statusText}</Text> : null}
-      {captions.length > 0 ? (
-        <View style={styles.captionsBox}>
-          {captions.map((caption, index) => (
-            <Text
-              key={index}
-              style={[styles.captionText, caption.speaker === 'user' ? styles.captionUser : styles.captionAssistant]}
-              numberOfLines={2}
-            >
-              {caption.speaker === 'user' ? 'You: ' : 'Casper: '}
-              {caption.text}
-            </Text>
-          ))}
-        </View>
-      ) : null}
+      {compact ? (
+        statusText || captions.length > 0 ? (
+          <View style={[styles.compactBubble, bubbleAlign === 'left' ? styles.bubbleLeft : styles.bubbleRight]}>
+            {details}
+          </View>
+        ) : null
+      ) : (
+        details
+      )}
     </View>
   );
 }
@@ -187,6 +211,27 @@ const styles = StyleSheet.create({
   captionsBox: {
     marginTop: 6,
     maxWidth: 220,
+  },
+  statusTextCompact: {
+    marginTop: 0,
+    textAlign: 'left',
+    width: '100%',
+  },
+  compactBubble: {
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    bottom: 54,
+    padding: 8,
+    position: 'absolute',
+    width: 240,
+  },
+  bubbleLeft: {
+    left: 0,
+  },
+  bubbleRight: {
+    right: 0,
   },
   captionText: {
     fontSize: 11,

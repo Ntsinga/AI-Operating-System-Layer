@@ -67,6 +67,7 @@
     </activity>
     <activity android:name=".InAppCaptureActivity" android:theme="@style/AppTheme" android:exported="false" android:screenOrientation="portrait"/>
     <activity android:name=".ImageBrowserActivity" android:theme="@style/AppTheme" android:exported="false" android:screenOrientation="portrait"/>
+    <activity android:name=".BoardActivity" android:theme="@style/AppTheme" android:exported="false" android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize"/>
     <receiver
       android:name=".AiosDeviceAdminReceiver"
       android:permission="android.permission.BIND_DEVICE_ADMIN"

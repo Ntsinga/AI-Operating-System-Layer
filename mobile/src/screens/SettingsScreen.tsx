@@ -1,5 +1,7 @@
 import { ScrollView, StyleSheet, Text } from 'react-native';
 
+import { ActivationSetupCard } from '../components/ActivationSetupCard';
+import { HandednessCard } from '../components/HandednessCard';
 import { OverlayControlCard } from '../components/OverlayControlCard';
 import { LatestBriefCard } from '../components/LatestBriefCard';
 import { ExpenseDashboardCard } from '../components/ExpenseDashboardCard';
@@ -11,8 +13,11 @@ function SectionHeader({ label }: { label: string }) {
   return <Text style={styles.sectionHeader}>{label}</Text>;
 }
 
-// The "Settings" tab (formerly "Tools" - renamed once the audit below left only assistant
-// controls, passive insights, and the teach/replay pair, none of which read as "tools" anymore).
+// The Settings screen, opened from the Home header (it was the second bottom tab until the Home
+// launcher screen replaced tab navigation; before that it was called "Tools" - renamed once the
+// audit below left only assistant controls, passive insights, and the teach/replay pair, none of
+// which read as "tools" anymore). Chat is no longer a tab: it is the sheet raised from the Home
+// ask bar, so the "Chat tab" mentioned in the notes below means that chat.
 // Only capabilities that genuinely beat doing the same thing on the phone directly.
 // Deliberately does NOT include every tool in tools/registry.ts:
 // - Read-only diagnostics (get_device_info, diagnose_network, get_contacts, etc.) and
@@ -36,10 +41,19 @@ function SectionHeader({ label }: { label: string }) {
 // factory reset, before signing into anything. That's unreachable on a real daily-driver phone
 // (verified: `adb shell dpm set-device-owner` fails here with "already several users on the
 // device"), so it stays in the codebase for dedicated test-device use but off this screen.
-export function SettingsScreen() {
+type Props = {
+  leftHanded: boolean;
+  onLeftHandedChange: (leftHanded: boolean) => void;
+};
+
+export function SettingsScreen({ leftHanded, onLeftHandedChange }: Props) {
   return (
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <SectionHeader label="Layout" />
+      <HandednessCard leftHanded={leftHanded} onChange={onLeftHandedChange} />
+
       <SectionHeader label="Assistant" />
+      <ActivationSetupCard />
       <OverlayControlCard />
 
       <SectionHeader label="Insights" />

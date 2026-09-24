@@ -24,6 +24,7 @@ from app.replay_recovery import resolve_replay_recovery  # noqa: E402
 from app.procedural_memory import approve_procedure, correct_step_and_save_version, delete_procedure, list_procedures, save_procedure, search_procedures  # noqa: E402
 from app.learning import append_action, append_actions, complete_session, start_session  # noqa: E402
 from app.debug_events import list_events, record_events  # noqa: E402
+from app.boards import ask_board, create_board, delete_board, get_board, list_boards, save_board  # noqa: E402
 
 app = FastAPI(title="AI-OS Orchestrator Backend")
 logger = logging.getLogger("aios.api")
@@ -110,6 +111,71 @@ def debug_events_create(req: DebugEventsRequest) -> dict[str, Any]:
 @app.get("/debug/events")
 def debug_events_list(traceId: Optional[str] = None, sessionId: Optional[str] = None, procedureId: Optional[int] = None, limit: int = 100) -> list[dict[str, Any]]:
     return list_events(trace_id=traceId, session_id=sessionId, procedure_id=procedureId, limit=limit)
+
+
+class BoardCreateRequest(BaseModel):
+    title: Optional[str] = None
+    kind: Optional[str] = None
+
+
+class BoardSaveRequest(BaseModel):
+    title: Optional[str] = None
+    scene: Optional[Any] = None
+    events: Optional[Any] = None
+    thumb: Optional[str] = None
+
+
+class BoardAskRequest(BaseModel):
+    question: str
+    snapshot: str  # PNG data-URI of the current canvas
+    selection: Optional[dict[str, Any]] = None
+
+
+@app.post("/boards")
+def boards_create(req: BoardCreateRequest) -> dict[str, Any]:
+    return create_board(req.title, req.kind)
+
+
+@app.get("/boards")
+def boards_list() -> list[dict[str, Any]]:
+    return list_boards()
+
+
+@app.get("/boards/{board_id}")
+def boards_get(board_id: str) -> dict[str, Any]:
+    try:
+        return get_board(board_id)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+
+
+@app.put("/boards/{board_id}")
+def boards_save(board_id: str, req: BoardSaveRequest) -> dict[str, Any]:
+    try:
+        return save_board(board_id, title=req.title, scene=req.scene, events=req.events, thumb=req.thumb)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+    except ValueError as error:
+        raise HTTPException(413, str(error))
+
+
+@app.delete("/boards/{board_id}")
+def boards_delete(board_id: str) -> dict[str, Any]:
+    try:
+        return delete_board(board_id)
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+
+
+@app.post("/boards/{board_id}/ask")
+def boards_ask(board_id: str, req: BoardAskRequest) -> dict[str, Any]:
+    try:
+        return ask_board(board_id, req.question, req.snapshot, req.selection)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    except Exception as error:  # LLMUnavailableError / LLMError - no capable provider configured
+        logger.warning("boards_ask_failed board=%s error=%s", board_id, error)
+        raise HTTPException(503, "No vision-capable AI provider is available to answer right now.")
 
 
 @app.get("/connect/google/start")
@@ -250,18 +316,20 @@ async def expenses_month(req: MonthlyFinanceRequest) -> dict[str, Any]:
 
 @app.post("/expenses/analyze")
 def expenses_analyze(req: FinanceAnalysisRequest) -> dict[str, str]:
-    import os, json
-    from openai import OpenAI
-    if not os.getenv("OPENAI_API_KEY"): raise HTTPException(503, "OPENAI_API_KEY is not configured.")
-    response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=120,
-        messages=[
-            {"role": "system", "content": "Summarize this personal finance data in at most 3 short bullet points (under 12 words each): top category, revenue vs expenses, one practical next step. No headers, no preamble, no regulated financial advice."},
-            {"role": "user", "content": json.dumps(req.finances)},
-        ],
-    )
-    return {"analysis": response.choices[0].message.content or "No analysis returned."}
+    import json
+    from app import llm
+    try:
+        result = llm.chat(
+            "analyze",
+            [
+                {"role": "system", "content": "Summarize this personal finance data in at most 3 short bullet points (under 12 words each): top category, revenue vs expenses, one practical next step. No headers, no preamble, no regulated financial advice."},
+                {"role": "user", "content": json.dumps(req.finances)},
+            ],
+            max_tokens=120,
+        )
+    except llm.LLMUnavailableError as error: raise HTTPException(503, str(error))
+    except llm.LLMError as error: raise HTTPException(502, str(error))
+    return {"analysis": result.text or "No analysis returned."}
 
 
 @app.post("/expenses/receipt")

@@ -515,6 +515,8 @@ This is the route toward tasks like:
 
 Important constraint: normal Android apps generally cannot rearrange another launcher's home screen. To control home-screen layout cleanly, this project should eventually build its own Android launcher.
 
+The detailed launcher and intent-layer design (capabilities and providers, preference learning, the Launcher v0 Home screen, roadmap) is in [AI_OS_INTENT_LAYER_PLAN.md](AI_OS_INTENT_LAYER_PLAN.md); UI rules are in [../mobile/DESIGN.md](../mobile/DESIGN.md).
+
 ## First Two-Week Execution Plan
 
 ### Days 1-2: Setup

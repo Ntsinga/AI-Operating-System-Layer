@@ -1,18 +1,90 @@
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
-import { Alert, Linking, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, AppState, BackHandler, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BottomNav, type TabKey } from './src/components/BottomNav';
-import { BrandMark } from './src/components/BrandMark';
-import { ChatScreen } from './src/screens/ChatScreen';
+import { ChatSheet } from './src/components/ChatSheet';
+import { resumeAssistantIfPermitted } from './src/native/assistantResume';
+import { getPref, setPref } from './src/native/Prefs';
+import { BoardsListScreen } from './src/screens/BoardsListScreen';
+import { HomeScreen } from './src/screens/HomeScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { colors } from './src/theme';
+import { colors, touchTarget } from './src/theme';
+
+const LEFT_HANDED_PREF_KEY = 'layout.leftHanded';
 
 export default function App() {
-  const [tab, setTab] = useState<TabKey>('chat');
-  const [voiceCommand, setVoiceCommand] = useState<string | null>(null);
-  const [liveVoiceRequested, setLiveVoiceRequested] = useState(false);
+  return (
+    <SafeAreaProvider>
+      <Shell />
+    </SafeAreaProvider>
+  );
+}
+
+// Home is the root screen. Chat is a sheet that rises from the Home ask bar (no Chat tab, no
+// bottom navigation), and Settings opens from the Home header. See docs/AI_OS_INTENT_LAYER_PLAN.md.
+function Shell() {
+  const insets = useSafeAreaInsets();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [boardsOpen, setBoardsOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatCommand, setChatCommand] = useState<string | null>(null);
+  const [liveRequested, setLiveRequested] = useState(false);
+  const [focusToken, setFocusToken] = useState(0);
+  const [leftHanded, setLeftHanded] = useState(false);
+
+  const openChat = useCallback((options?: { command?: string; live?: boolean; focus?: boolean }) => {
+    setSettingsOpen(false);
+    if (options?.command) setChatCommand(options.command);
+    if (options?.live) setLiveRequested(true);
+    if (options?.focus) setFocusToken((token) => token + 1);
+    setChatOpen(true);
+  }, []);
+  const closeChat = useCallback(() => setChatOpen(false), []);
+  const consumeCommand = useCallback(() => setChatCommand(null), []);
+  const consumeLive = useCallback(() => setLiveRequested(false), []);
+
+  const changeLeftHanded = useCallback((value: boolean) => {
+    setLeftHanded(value);
+    void setPref(LEFT_HANDED_PREF_KEY, value);
+  }, []);
+
+  useEffect(() => {
+    void getPref<boolean>(LEFT_HANDED_PREF_KEY, false).then(setLeftHanded);
+  }, []);
+
+  // Keeps "Hey Casper" and the overlay resuming on launch and every return to the foreground. This
+  // used to happen only because the Chat tab (and its ActivationSetupCard) was always mounted.
+  useEffect(() => {
+    const resume = () => {
+      resumeAssistantIfPermitted().catch(() => undefined);
+    };
+    resume();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') resume();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  // Back closes the top layer first: the chat sheet, then Settings.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (chatOpen) {
+        setChatOpen(false);
+        return true;
+      }
+      if (settingsOpen) {
+        setSettingsOpen(false);
+        return true;
+      }
+      if (boardsOpen) {
+        setBoardsOpen(false);
+        return true;
+      }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [chatOpen, settingsOpen, boardsOpen]);
 
   useEffect(() => {
     function commandFromUrl(url: string | null): string | null {
@@ -40,60 +112,70 @@ export default function App() {
       } else {
         Alert.alert('Google connection failed', message ? decodeURIComponent(message.replace(/\+/g, ' ')) : 'Please try again.');
       }
-      setTab('settings');
+      setChatOpen(false);
+      setSettingsOpen(true);
       return true;
     }
 
-    Linking.getInitialURL().then((url) => {
+    function routeUrl(url: string | null) {
       if (handleGoogleConnectedUrl(url)) return;
       const command = commandFromUrl(url);
-      if (command) setVoiceCommand(command);
-      else if (isLiveVoiceUrl(url)) setLiveVoiceRequested(true);
-    });
+      if (command) openChat({ command });
+      else if (isLiveVoiceUrl(url)) openChat({ live: true });
+    }
 
-    const subscription = Linking.addEventListener('url', ({ url }) => {
-      if (handleGoogleConnectedUrl(url)) return;
-      const command = commandFromUrl(url);
-      if (command) {
-        setTab('chat');
-        setVoiceCommand(command);
-      } else if (isLiveVoiceUrl(url)) {
-        setTab('chat');
-        setLiveVoiceRequested(true);
-      }
-    });
+    Linking.getInitialURL().then(routeUrl);
+    const subscription = Linking.addEventListener('url', ({ url }) => routeUrl(url));
     return () => subscription.remove();
-  }, []);
+  }, [openChat]);
 
   return (
-    <SafeAreaProvider>
-      <View style={styles.screen}>
-        <StatusBar style="light" />
+    <View style={styles.screen}>
+      <StatusBar style="light" />
 
-        <View style={styles.header}>
-          <BrandMark size={36} />
-          <View>
-            <Text style={styles.wordmark}>AI-OS</Text>
-            <Text style={styles.eyebrow}>Phone Orchestration Layer</Text>
+      {settingsOpen ? (
+        <View style={styles.settings}>
+          <View style={[styles.settingsHeader, { paddingTop: insets.top + 8 }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to Home"
+              onPress={() => setSettingsOpen(false)}
+              style={styles.backButton}
+            >
+              <Text style={styles.backText}>Back</Text>
+            </Pressable>
+            <Text style={styles.settingsTitle}>Settings</Text>
+          </View>
+          <View style={[styles.settingsBody, { paddingBottom: insets.bottom }]}>
+            <SettingsScreen leftHanded={leftHanded} onLeftHandedChange={changeLeftHanded} />
           </View>
         </View>
+      ) : boardsOpen ? (
+        <BoardsListScreen onBack={() => setBoardsOpen(false)} />
+      ) : (
+        <HomeScreen
+          leftHanded={leftHanded}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenBoards={() => {
+            setSettingsOpen(false);
+            setBoardsOpen(true);
+          }}
+          onAsk={(text) => openChat(text ? { command: text } : { focus: true })}
+          onLive={() => openChat({ live: true })}
+        />
+      )}
 
-        <View style={styles.body}>
-          {tab === 'chat' ? (
-            <ChatScreen
-              voiceCommand={voiceCommand}
-              onVoiceCommandConsumed={() => setVoiceCommand(null)}
-              liveVoiceRequested={liveVoiceRequested}
-              onLiveVoiceRequestConsumed={() => setLiveVoiceRequested(false)}
-            />
-          ) : (
-            <SettingsScreen />
-          )}
-        </View>
-
-        <BottomNav active={tab} onChange={setTab} />
-      </View>
-    </SafeAreaProvider>
+      <ChatSheet
+        open={chatOpen}
+        onClose={closeChat}
+        command={chatCommand}
+        onCommandConsumed={consumeCommand}
+        liveVoiceRequested={liveRequested}
+        onLiveVoiceConsumed={consumeLive}
+        leftHanded={leftHanded}
+        focusToken={focusToken}
+      />
+    </View>
   );
 }
 
@@ -102,30 +184,35 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  header: {
+  settings: {
+    flex: 1,
+  },
+  settingsHeader: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 16,
+    gap: 4,
+    paddingBottom: 8,
+    paddingHorizontal: 12,
   },
-  wordmark: {
-    color: colors.textPrimary,
-    fontSize: 24,
-    fontWeight: '900',
-    letterSpacing: 1.5,
-    lineHeight: 28,
+  backButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: touchTarget,
+    minWidth: touchTarget,
+    paddingHorizontal: 8,
   },
-  eyebrow: {
-    color: colors.textMuted,
-    fontSize: 10,
+  backText: {
+    color: colors.accent,
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: 1.3,
-    marginTop: 1,
-    textTransform: 'uppercase',
   },
-  body: {
+  settingsTitle: {
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '800',
+    marginLeft: 4,
+  },
+  settingsBody: {
     flex: 1,
     paddingHorizontal: 20,
   },

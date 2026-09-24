@@ -1,6 +1,7 @@
 import { AppState, StyleSheet, Text, View } from 'react-native';
 import { useCallback, useEffect, useState } from 'react';
 
+import { resumeAssistantIfPermitted } from '../native/assistantResume';
 import { getAudioRecorderModule } from '../native/AudioRecorder';
 import { getOverlayModule } from '../native/Overlay';
 import { getVoiceActivationModule, type VoiceSetupStatus } from '../native/VoiceActivation';
@@ -24,16 +25,10 @@ export function ActivationSetupCard() {
 
   const refresh = useCallback(async () => {
     try {
-      const next = await getVoiceActivationModule().getSetupStatus();
-      setStatus(next);
-
       // Once the user has approved Android's permissions and calibrated, the assistant resumes
-      // automatically whenever the app comes back to the foreground.
-      if (next.hasOverlayPermission) {
-        if (!next.overlayActive) await getOverlayModule().startOverlay();
-        if (next.hasMicPermission && !next.voiceActive) await getVoiceActivationModule().startVoiceActivation();
-        setStatus(await getVoiceActivationModule().getSetupStatus());
-      }
+      // automatically whenever the app comes back to the foreground (App.tsx also does this, so
+      // it no longer depends on this card being on screen).
+      setStatus(await resumeAssistantIfPermitted());
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to read activation status.');
     }
